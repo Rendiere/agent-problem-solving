@@ -1,0 +1,64 @@
+{
+  "id": "agent-problem-solving",
+  "name": "Agent Problem Solving",
+  "description": "Keeps each agent on one written problem per thread: injects the register and a context gauge every turn, writes an append-only decision log, and ships frame/reframe/close/focus skills.",
+  "version": "0.2.0",
+  "activation": {
+    "onStartup": true
+  },
+  "skills": [
+    "skills"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "overlayPath"
+    ],
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "agents": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Agent ids the hook runs for. Empty or absent means every agent."
+      },
+      "overlayPath": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^/",
+        "description": "Absolute path to the operator overlay holding registers, logs and the deny-list."
+      },
+      "stateDir": {
+        "type": "string",
+        "pattern": "^/",
+        "description": "Where snapshots and turn counts live. Defaults to <overlayPath>/.state."
+      },
+      "registerFile": {
+        "type": "string",
+        "description": "Register filename inside each agent overlay folder. Default PROBLEMS.md."
+      },
+      "warnTokens": {
+        "type": "integer",
+        "minimum": 1000,
+        "description": "Offer a reset at the next problem boundary above this."
+      },
+      "highTokens": {
+        "type": "integer",
+        "minimum": 1000,
+        "description": "Offer a reset straight away above this."
+      },
+      "compactShrinksSession": {
+        "type": "boolean",
+        "description": "Set true only on a backend where compacting shrinks the session."
+      },
+      "resetCommand": {
+        "type": "string",
+        "description": "The command the reset offer names. Default /new."
+      }
+    }
+  }
+}

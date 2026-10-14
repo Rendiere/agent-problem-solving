@@ -1,92 +1,42 @@
 ---
 name: focus
-description: Use when a message switches problem, drifts off the active problem, or starts a side task, when parking or resuming a problem, and when asked what is parked or how full the context is.
+description: Use when a message switches problem, drifts off the active one, or starts a side task, when parking or resuming, and when asked what is parked or how full the session is.
 ---
 
 # Stay on one problem
 
-The block at the top of every turn names this thread's active problem and ends
-with a short check. This skill is the long version of that check.
+The block at the top of each turn names this thread's problem and ends with a short check. This skill is the longer version of that check.
 
 | Kind | Sign | Do |
 |---|---|---|
-| Same problem | It moves the done-when | Carry on. |
-| A switch | The message belongs to a different problem | Ask first, one line: "Park P\<n\> (\<its state\>) and switch?" Wait. Never switch unasked, even when the person started it. |
-| Drift | The work no longer moves the done-when and nobody asked to switch | Open the reply with the drift line and stop. |
-| A side task | The problem needs a smaller job done first | Draft it as its own entry with `parent: P\<n\>` and ask. |
-| Not problem-solving | A fact, a reminder, a chat | Answer. No entry. |
+| Same problem | It moves `done when` | Carry on. |
+| Deliberate switch | The operator asks for other work | Ask in one line: "Park <ID> (<state>) and switch?", options 1. Park and switch 2. Stay. Write `pending: switch <date>`. On a yes, use the complete `Change it:` command from the reminder to set `<ID> status=parked state="…"`, then make the other problem active. One line confirms it: "Parked: <a>. Now on: <b>." |
+| Drift | The work no longer moves `done when`, and nobody asked for that | Open the reply with "🧭 I noticed we're veering off <ID title>: <what pulled us away>", then 1. Go back to the quest 2. Reframe it 3. Park it and switch. Write `pending: drift <date>` and do no further work on this thread until they answer. |
+| Not problem-solving | A fact, a reminder, chat | Answer. No entry. |
 
-Related is not the same as moving it: a question about how the tools work can be
-relevant to a problem without moving its done-when. Your own drift counts too,
-so name it when your next step would not move the done-when.
-
-## The drift line
-
-A drift reply opens with it and does nothing else until the person picks:
-
-```
-🧭 I noticed we're veering off P14 · Win the First Ten Artists: privacy-page code won't help us email the first ten artists.
-Choose one:
-1. Go back to the artist list.
-2. Reframe the quest.
-3. Park this quest and switch.
-```
-
-One line of reason may follow. Nothing else. Write `pending: drift <today>` on
-the entry so the stop survives a reset or a compaction, and do no further work
-on that problem until the answer comes.
-
-The drift signals are: the person pushes back twice on this thread, you correct
-yourself twice, the fix on offer is a workaround ("for now", "stopgap"), or the
-next step does not move the done-when. Keep the pushback and self-correction
-counts on the entry with `aps set`, so they survive a reset. The counts help you
-notice; they never raise a notice on their own.
-
-## Switching and parking
-
-Ask in one line, naming the problem and its state: "Park the clinic booking
-(waiting on their reply) and switch?" After the answer, confirm in one line:
-"Parked: clinic booking. Now on: plugin requirements." Yes to a switch also
-confirms resuming a problem that was already parked; a new problem still needs
-its own entry question.
-
-After "stay", note the declined request on the state line and do not ask again
-about follow-ups to it.
+Related is not the same as moving it: a question about how the tools work can be relevant to a problem without moving its `done when`. Your own drift counts too, so name it when your next step would not move `done when`.
 
 ## Side tasks
 
-A side task becomes the thread's active problem and its parent is paused;
-`aps set` applies that both ways. Before a side task would spawn its own side
-task, ask whether the original problem still needs it. A sub-agent you delegate
-to is not a side task and gets no entry.
+A side task started to unblock a problem is its child: draft it with `parent: <ID>`. Once the operator confirms, use the reminder's complete `Change it:` command to set `<child> status=active --confirmed`; that pauses the parent and gives the thread to the child. Closing or dropping the child hands the thread back. Before a child would start its own child, ask whether the original problem still needs it.
 
 ## Keep the state line current
 
-Update `state` whenever a step lands, not only when parking. A session can reset
-or compact without warning, and the register on disk is what carries the problem
-across.
+`aps set <ID> state="…"` whenever a step lands, not only when parking. Sessions reset and compact without warning, and the register on disk is what carries the problem across. Before a reset, write the state down.
 
-## Answering "what's parked" and "how full is the context"
+## Answering "what's parked" and "how full is the session"
 
-Run `aps report` and answer from it in one short message: the parked problems
-with their ages, anything untouched for seven days, and the largest live
-session. Do not guess either from memory.
-
-## Context
-
-The block shows the session's size against two levels. Past the first, offer the
-reset at the next close, park or reframe — never mid-problem. Past the second,
-write the state to the register and offer it straight away. The offer names the
-command; the first reply in the fresh session opens with "Back on: \<problem\>".
+Run `aps report` and answer in one short message: the parked problems with their age, anything untouched for a week, any question still waiting, and the largest live session. Do not paste the whole report.
 
 ## Defaults
 
-- Only an explicit choice answers a pending question. Otherwise answer a fact
-  or reminder, restate the same question, and keep its `pending:` line.
-- Restate a pending question after 24 hours. Restate a proposed entry after
-  three days.
-- After the person chooses "stay", record the declined request and do not ask
-  again about its follow-ups.
-- When a parent closes or is dropped, ask once what to do with any open side
-  task. A sub-agent run is not a side task.
-- Reset `pushbacks:` and `corrections:` on park, reframe and close.
+- Only an explicit choice answers an open question. Anything else leaves the `pending:` line where it is; restate the question in one line.
+- Restate an unanswered question after 24 hours, and a proposed entry after three days.
+- After a "stay", note the declined request in `state` and do not ask about it again.
+- Reset `pushbacks` and `corrections` to 0 on a park, a reframe or a close.
+- When a parent closes or is dropped with an open side task, ask once what happens to the side task.
+- A sub-agent you dispatch is not a side task: it is work on this problem.
+
+## Context
+
+The block shows the session's size against two levels. Past the first, wait for the next close, park or reframe, write the state down, then offer a reset. Past the second, write the state down and offer the reset straight away, even mid-problem.

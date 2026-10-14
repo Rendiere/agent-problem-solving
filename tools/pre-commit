@@ -2,7 +2,7 @@
 # Refuse a commit that puts an overlay identifier in the core.
 #
 # Install it in the operator's working copy of the core:
-#   git config core.hooksPath hooks
+#   git config core.hooksPath tools
 # It needs APS_OVERLAY to point at the overlay holding denylist.txt. Without
 # that it refuses rather than passing quietly, because a silent pass here is the
 # failure it exists to stop.
@@ -18,4 +18,4 @@ if [ -z "$APS_OVERLAY" ]; then
   echo "            Set it, or write the overlay path into $root/.aps-overlay." >&2
   exit 1
 fi
-exec node "$root/bin/denylist-check.mjs" --staged
+exec node "$root/tools/denylist-check.mjs" --staged

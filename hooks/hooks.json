@@ -1,0 +1,17 @@
+{
+  "description": "Put the active problem in front of the agent before every prompt it answers.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/reminder.mjs\"",
+            "timeout": 5,
+            "statusMessage": "Reading the active problem"
+          }
+        ]
+      }
+    ]
+  }
+}

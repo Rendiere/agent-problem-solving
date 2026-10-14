@@ -1,8 +1,8 @@
 {
   "id": "agent-problem-solving",
   "name": "Agent Problem Solving",
-  "description": "Keeps each agent on one written problem per thread: injects the register and a context gauge every turn, writes an append-only decision log, and ships frame/reframe/close/focus skills.",
-  "version": "0.2.0",
+  "description": "One plugin bundling the method skills, a per-turn hook and the aps command: one named problem per chat thread, the register and a context gauge in front of the agent on every turn, every change in an append-only decision log.",
+  "version": "0.3.0",
   "activation": {
     "onStartup": true
   },
@@ -23,41 +23,29 @@
         "type": "array",
         "items": {
           "type": "string"
-        },
-        "description": "Agent ids the hook runs for. Empty or absent means every agent."
+        }
       },
       "overlayPath": {
         "type": "string",
         "minLength": 1,
-        "pattern": "^/",
-        "description": "Absolute path to the operator overlay holding registers, logs and the deny-list."
-      },
-      "stateDir": {
-        "type": "string",
-        "pattern": "^/",
-        "description": "Where snapshots and turn counts live. Defaults to <overlayPath>/.state."
+        "pattern": "^/"
       },
       "registerFile": {
-        "type": "string",
-        "description": "Register filename inside each agent overlay folder. Default PROBLEMS.md."
+        "type": "string"
       },
       "warnTokens": {
         "type": "integer",
-        "minimum": 1000,
-        "description": "Offer a reset at the next problem boundary above this."
+        "minimum": 1000
       },
       "highTokens": {
         "type": "integer",
-        "minimum": 1000,
-        "description": "Offer a reset straight away above this."
+        "minimum": 1000
       },
-      "compactShrinksSession": {
-        "type": "boolean",
-        "description": "Set true only on a backend where compacting shrinks the session."
+      "canCompact": {
+        "type": "boolean"
       },
-      "resetCommand": {
-        "type": "string",
-        "description": "The command the reset offer names. Default /new."
+      "timeZone": {
+        "type": "string"
       }
     }
   }

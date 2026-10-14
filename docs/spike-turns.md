@@ -1,58 +1,78 @@
-# Spike: how does the hook tell the person's turns from automated ones?
+# Telling the person's turns from automated ones
 
-14 October 2026. OpenClaw 2026.7.1-2, Claude Code backend, model `claude-cli/claude-opus-5-5`.
-Run in an isolated profile with one throwaway agent and a trace-only plugin that
-recorded `before_prompt_build`'s event and context for every turn. No live agent,
-config or session was touched.
+**Status: partial.** The rule below is implemented and tested, and the hook's
+own firing is observed live. The `trigger` values for a heartbeat, a cron run
+and a button tap, and the provenance on a sub-agent completion report landing in
+a parent session, are read from the runtime's types and sources rather than
+watched on a live gateway. Until a day of `APS_TRACE_FILE` traffic has been
+reviewed, treat the classifier as unproven on those four shapes; that review is
+a gate before the first rollout.
 
-**Verdict: yes, with two independent markers.** `trigger`, `sessionKey` and
-`senderId` alone cannot separate a sub-agent completion report from a real
-message: both arrive with `trigger: "user"` on the parent's own session key. The
-report is marked in two other places, and either one is enough.
+The reminder prompts the person on a turn from the person, and must never prompt
+on a cron, a heartbeat or a sub-agent's completion report, because nobody is
+there to answer (R19). So the plugin needs a field it can trust.
 
-## What was observed
+## What the runtime gives the hook
 
-| Turn kind | `ctx.trigger` | `ctx.sessionKey` | `ctx.runId` | `event.prompt` opens with |
-|---|---|---|---|---|
-| A person's message | `user` | the conversation session | a bare UUID | the message |
-| Cron run | `cron` | `agent:<id>:cron:<job>:run:<run>` | a bare UUID | `[cron:<job> <name>]` |
-| Sub-agent's own run | `user` | `agent:<id>:subagent:<uuid>` | a bare UUID | `[Subagent Context]` |
-| Sub-agent completion report, landing in the parent | `user` | **the parent's conversation session** | `announce:v1:<child session>:<child run>` | `[Inter-session message] … isUser=false … sourceTool=subagent_announce` |
+`before_prompt_build` receives `(event, ctx)`. On OpenClaw 2026.7.1 these are the
+fields that bear on the question:
 
-Two turns one second apart, same agent, same session key, same trigger, same
-(absent) sender: the person's message at 09:13:18 and the completion report at
-09:13:37. The only fields that differ are `runId` and the prompt's opening.
+| Where | Field | Use |
+|---|---|---|
+| `ctx` | `trigger` | `"user"` for a channel message, `"heartbeat"`, `"cron"`, `"memory"`, `"manual"` and a set of internal values (`budget`, `overflow`, `timeout_recovery`, `diagnostics`) for everything else. |
+| `ctx` | `senderId`, `channelContext.sender` | The channel's sender identity, set on channel-originated runs only. |
+| `ctx` | `channel`, `messageProvider`, `chatId` | Which channel the run came from. |
+| `event` | `messages[]` | The session messages for this run. The newest user message carries `provenance`. |
+| `event` | `prompt` | The text of the turn. |
 
-`senderId` was undefined on every turn in this spike, including the person's,
-because a CLI-originated turn has no channel sender. So a present sender is
-positive evidence of a person, but an absent one proves nothing.
+`provenance.kind` is one of `external_user`, `inter_session` or
+`internal_system`. Anything routed in from another session or an internal tool —
+a sub-agent's completion report, an inter-session send, a generated-media
+callback — is marked `inter_session`, with `provenance.sourceTool` naming the
+tool (`subagent_announce`, `sessions_send`, `agent_harness_task`). The same runs
+get a text header on the prompt:
 
-## The two markers
+```
+[Inter-session message] sourceSession=<key> sourceChannel=<channel> sourceTool=<tool> isUser=false
+```
 
-1. **The prompt's inter-session envelope.** A routed turn opens with
-   `[Inter-session message]` and carries `isUser=false`. That flag is OpenClaw's
-   own classification of the turn, which makes it the primary marker. A routed
-   turn from another session with `isUser=true` is a person's message relayed
-   across sessions and stays the person's.
-2. **The run id's scheme prefix.** A turn the person started carries a bare
-   UUID. A machine-started turn carries a prefixed id: `announce:v1:…` for a
-   completion report, `manual:<job>:…` for a cron job run by hand. Anything
-   before a `:` in the run id means the turn was not typed by a person.
+That answers the stop condition in the plan: a completion report is marked, in
+two independent places, and neither depends on guessing from the text.
 
-## What the classifier does with this
+## The rule
 
-Automated is the default; a turn is the person's only on positive evidence
-(KTD7). The design does not rest on knowing every trigger string, so a trigger
-value this spike did not see cannot be mistaken for a person.
+`lib/classify.js` defaults to automated and calls a turn the person's only with
+all three of:
 
-A heartbeat did not fire during the spike: heartbeats need a delivery route and
-the isolated profile had none. It is handled by the default rather than by a
-match, so the gap does not weaken the classifier. The same holds for an inline
-button tap, which arrives as an ordinary inbound channel message with a real
-sender and no inter-session envelope.
+1. `ctx.trigger === "user"`,
+2. a channel sender (`ctx.senderId` or `ctx.channelContext.sender.id`),
+3. no routed-input marker — neither an `inter_session` or `internal_system`
+   provenance on the newest user message, nor the `[Inter-session message]`
+   header on the prompt.
 
-## Gotcha
+Consequences worth stating plainly:
 
-A plugin manifest without a `configSchema` fails config validation at gateway
-start with `plugins: plugin: plugin manifest requires configSchema`. Every
-manifest needs one, even an empty object schema.
+- A heartbeat or cron turn has no channel sender and a non-user trigger, so it is
+  automated twice over.
+- A sub-agent completion report arrives on a `user` trigger in the parent's
+  channel session, with a sender; the provenance is what catches it.
+- A CLI run (`openclaw agent --message`) is automated. It has no channel sender.
+  A person at a terminal therefore gets the short block. That is the safe way to
+  be wrong.
+- A number-button tap in a forum topic reaches the agent as an ordinary channel
+  message, so it classifies as the person's.
+
+## What is observed and what is read
+
+Observed: the hook fires on every claude-cli turn, in an embedded run and
+through a real gateway, and survives a reset and the backend's own compaction
+(see `spike-hook.md`); an inter-session turn carries the header above.
+
+Read from the runtime's own types and sources, not yet observed live: the
+`trigger` value on a heartbeat, on a cron run and on a button tap, and the
+`provenance` on a sub-agent completion report as it lands in a parent session.
+
+How the rest gets confirmed: set `APS_TRACE_FILE` on the gateway before the
+first rollout. Every turn then appends its `trigger`, `sessionKey`, `channel`,
+`senderId` and the classification to that file, so one day of real traffic shows
+whether any turn was called wrong. Check it before trusting the short block.

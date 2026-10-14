@@ -1,31 +1,20 @@
 ---
 name: reframe
-description: Use when a tripwire fires on the active problem - the person pushes back twice on one thread, you correct yourself twice, the fix on the table is a workaround ("for now", "stopgap", "plaster"), or a build is about to start.
+description: Use when a tripwire fires on the active problem - the operator pushes back twice in one thread, you correct yourself twice, the fix on the table is a workaround ("for now", "stopgap"), or a build is about to start.
 ---
 
 # Reframe
 
-New information means the problem statement itself may be wrong. Check it before
-doing more work.
+New information means the problem statement may be wrong. Check it before doing more.
 
-1. **Stop** the current line of work for this reply.
+1. **Stop** this line of work for this reply.
 2. **Restate** the active problem in one line, as the register has it.
-3. **Say what changed**: the pushback, your own correction, or the evidence that
-   the approach on the table is a workaround.
-4. **Propose one of two things**: the same problem with a different approach, or
-   a reworded problem with a new `problem` and `done when`. The register's own
-   wording is often what is wrong — if the problem is narrower than what the
-   person keeps asking for, widen it. A reworded entry goes back to `proposed`
-   and needs confirming again.
-5. **Ask one question** that decides between them. Number the options and keep
-   it to one message. Write `pending: reword <today>` on the entry.
+3. **Say what changed**: the pushback, the correction, the evidence that the approach is a workaround.
+4. **Propose** either the same problem with a new approach, or a reworded problem (problem, done when). The register's own wording is often what is wrong: if the problem is narrower than what the operator keeps asking for, widen it. A reworded entry goes back to `proposed`.
+5. **Ask one question** that decides between them. When the answers are discrete, number them and add number-only buttons.
 
-Before a build, the question is whether the build is the simplest approach that
-meets the done-when. If a smaller step meets it, propose that instead. If the
-fix on the table is a stop-gap, call it one and say what it leaves unsolved.
+Before a build, the question is whether the build is the simplest approach that meets `done when`. If a smaller step meets it, propose that. If the fix on the table is a stop-gap, call it one and say what it leaves unsolved.
 
-A reframe resets the pushback and self-correction counts. Record the change with
-`aps set`.
+**If the reframe needs a picture**, use C4 and stop at level 1 (system context) and level 2 (containers): ten to fifteen boxes, every arrow one-way and labelled with the protocol, or the action where no protocol applies.
 
-A reframe is also a problem boundary: if the context gauge is past its warning
-level, this is a moment to offer the reset.
+Keep the tripwire counts honest: `aps set <ID> pushbacks=2 corrections=1` as they happen, so they survive a reset. Once the operator answers, `aps set <ID> state="…"` and, on a reword, `status=proposed`.

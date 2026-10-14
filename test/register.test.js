@@ -1,16 +1,140 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import {
-  parseRegister, lintRegister, selectForThread, threadFromSessionKey, threadMatches, STATUSES,
-} from "../lib/register.js";
-import { readRegister } from "../lib/store.js";
-import { reg, P, overlay } from "./helpers.js";
+import { readFileSync, readdirSync } from "node:fs";
+import { parseRegister, lintRegister, selectForThread, threadFromSessionKey, threadMatches, normaliseThread, STATUSES } from "../lib/register.js";
+import { buildInjection } from "../lib/inject.js";
+import { setFields } from "../lib/edit.js";
+import { gaugeLine, gaugeLevel } from "../lib/gauge.js";
+import { validateConfig } from "../lib/config.js";
 
-const codes = (text) => lintRegister(parseRegister(text)).map((f) => f.code);
+const tokens = (text) => Math.ceil(text.length / 4);
+
+const SAMPLE = `# Problems
+
+Mission: 250 of committed monthly revenue by 31 December, or stop.
+
+## P1. First ten artists emailed
+- status: active
+- problem: No artist has heard of the product yet.
+- serves: committed monthly revenue
+- done when: ten personalised emails approved and sent.
+- rules out: privacy and compliance polish
+- thread: topic:11
+- links: LIN-12, JIRA-4
+- pushbacks: 2
+- corrections: 1
+- confirmed: 2026-10-09 active
+- updated: 2026-10-09
+
+## P2. Referral links
+- status: parked
+- thread: topic:11
+- updated: 2026-10-12
+- state: copy drafted, no code
+
+## P3. Older parked
+- status: parked
+- thread: topic:11
+- updated: 2026-10-01
+
+## P4. Other thread
+- status: active
+- done when: it works
+- confirmed: 2026-10-10 active
+- thread: topic:22
+`;
+
+const lintCodes = (text) => lintRegister(parseRegister(text)).map((f) => f.code);
+
+test("parses the mission, fields, lists and counts", () => {
+  const r = parseRegister(SAMPLE);
+  assert.equal(r.problems.length, 4);
+  assert.match(r.mission, /committed monthly revenue/);
+  const p1 = r.problems[0];
+  assert.equal(p1.fields["done when"], "ten personalised emails approved and sent.");
+  assert.deepEqual(p1.links, ["LIN-12", "JIRA-4"]);
+  assert.equal(p1.pushbacks, 2);
+  assert.equal(p1.corrections, 1);
+  assert.equal(p1.confirmed.date, "2026-10-09");
+  assert.equal(r.problems[1].status, "parked");
+});
+
+test("every status in the requirements parses, and nothing else does", () => {
+  for (const s of STATUSES) {
+    const r = parseRegister(`Mission: m\n\n## P1. x\n- status: ${s}\n- thread: topic:1\n- done when: y\n`);
+    assert.equal(r.problems[0].status, s);
+    assert.ok(r.problems[0].statusKnown);
+  }
+  const odd = parseRegister("Mission: m\n\n## P1. x\n- status: finished\n- thread: topic:1\n");
+  assert.equal(odd.problems[0].statusKnown, false);
+  assert.equal(odd.problems[0].status, "finished");
+});
+
+test("an unknown status is reported in lint and in the block", () => {
+  const text = "Mission: m\n\n## P1. x\n- status: finished\n- thread: topic:1\n";
+  assert.ok(lintCodes(text).includes("status-unknown"));
+  const block = buildInjection(parseRegister(text), { thread: "topic:1" });
+  assert.match(block, /Unknown status on P1 \("finished"\)/);
+});
+
+test("paused parent with an active child parses and lints clean", () => {
+  const text = `Mission: m
+
+## P1. Parent
+- status: paused
+- thread: topic:1
+- updated: 2026-10-13
+- confirmed: 2026-10-13 paused
+
+## P2. Side task
+- status: active
+- parent: P1
+- thread: topic:1
+- done when: the script runs
+- confirmed: 2026-10-13 active
+- updated: 2026-10-13
+`;
+  assert.deepEqual(lintCodes(text), []);
+  const sel = selectForThread(parseRegister(text), "topic:1");
+  assert.equal(sel.main.id, "P2");
+  assert.equal(sel.pausedParent.id, "P1");
+  assert.match(buildInjection(parseRegister(text), { thread: "topic:1" }), /on P2 Side task \(side task of P1\), P1 Parent paused/);
+});
+
+test("two active problems in one thread is a lint error", () => {
+  const text = "Mission: m\n\n## P1. a\n- status: active\n- thread: topic:1\n- done when: x\n\n## P2. b\n- status: active\n- thread: topic:1\n- done when: y\n";
+  assert.ok(lintCodes(text).includes("two-active"));
+});
+
+test("an active problem beside a blocked one in the same thread is a lint error", () => {
+  const text = "Mission: m\n\n## P1. a\n- status: blocked\n- thread: topic:1\n\n## P2. b\n- status: active\n- thread: topic:1\n- done when: y\n";
+  assert.ok(lintCodes(text).includes("active-beside-blocked"));
+});
+
+test("a paused entry with no active child is a lint error", () => {
+  const text = "Mission: m\n\n## P1. a\n- status: paused\n- thread: topic:1\n";
+  assert.ok(lintCodes(text).includes("paused-without-active-child"));
+});
+
+test("a blank thread is a lint error and the entry is active nowhere", () => {
+  const text = "Mission: m\n\n## P1. Loose\n- status: active\n- done when: x\n\n## P2. Mine\n- status: active\n- thread: topic:5\n- done when: y\n";
+  assert.ok(lintCodes(text).includes("thread-blank"));
+  const sel = selectForThread(parseRegister(text), "topic:5");
+  assert.deepEqual(sel.here.map((p) => p.id), ["P2"]);
+  assert.deepEqual(sel.unthreaded.map((p) => p.id), ["P1"]);
+  assert.match(buildInjection(parseRegister(text), { thread: "topic:5" }), /No thread set on: P1/);
+});
+
+test("a missing mission line and a missing done-when are lint errors", () => {
+  assert.ok(lintCodes("## P1. a\n- status: active\n- thread: topic:1\n").includes("mission-missing"));
+  assert.ok(lintCodes("Mission: m\n\n## P1. a\n- status: active\n- thread: topic:1\n").includes("done-when-missing"));
+});
+
+test("a status only the operator can set, with no confirmed line, is flagged", () => {
+  const codes = lintCodes("Mission: m\n\n## P1. a\n- status: active\n- thread: topic:1\n- done when: x\n");
+  assert.ok(codes.includes("unconfirmed"));
+  assert.deepEqual(lintCodes(SAMPLE), []);
+});
 
 test("the template parses to an empty register", () => {
   const r = parseRegister(readFileSync(new URL("../templates/PROBLEMS.md", import.meta.url), "utf8"));
@@ -18,135 +142,186 @@ test("the template parses to an empty register", () => {
   assert.equal(r.mission, "");
 });
 
-test("every status in the list is a status, and nothing else is", () => {
-  assert.deepEqual([...STATUSES], ["proposed", "active", "paused", "parked", "blocked", "done", "dropped"]);
-});
-
-test("a paused parent with an active side task in the same thread lints clean", () => {
-  const text = reg(
-    P("P1", { title: "Email the first ten artists", status: "paused", thread: "topic:5", done_when: "ten sent", updated: "2026-10-14" }) +
-      "\n" +
-      P("P2", { title: "Find fifty addresses", status: "active", parent: "P1", thread: "topic:5", done_when: "fifty found", updated: "2026-10-14" }),
-  );
-  assert.deepEqual(codes(text), []);
-  const sel = selectForThread(parseRegister(text), "topic:5");
-  assert.equal(sel.activeHere.id, "P2");
-  assert.equal(sel.pausedParent.id, "P1");
-  assert.equal(sel.state, "on-problem");
-});
-
-test("two active problems in one thread is a lint error", () => {
-  const text = reg(
-    P("P1", { status: "active", thread: "topic:5", done_when: "x" }) + "\n" + P("P2", { status: "active", thread: "topic:5", done_when: "y" }),
-  );
-  assert.ok(codes(text).includes("thread-two-active"));
-});
-
-test("an active problem beside a blocked one in the same thread is a lint error", () => {
-  const text = reg(
-    P("P1", { status: "blocked", thread: "topic:5" }) + "\n" + P("P2", { status: "active", thread: "topic:5", done_when: "y" }),
-  );
-  assert.ok(codes(text).includes("thread-active-and-blocked"));
-});
-
-test("a blocked problem keeps the thread's slot", () => {
-  const sel = selectForThread(parseRegister(reg(P("P1", { status: "blocked", thread: "topic:5", state: "waiting on their reply" }))), "topic:5");
-  assert.equal(sel.state, "blocked");
-  assert.equal(sel.activeHere, null);
-  assert.equal(sel.blockedHere[0].id, "P1");
-});
-
-test("an unknown status is reported, not coerced", () => {
-  const r = parseRegister(reg(P("P1", { status: "finished", thread: "topic:5" })));
-  assert.equal(r.problems[0].status, "finished");
-  assert.equal(r.problems[0].unknownStatus, true);
-  assert.ok(lintRegister(r).some((f) => f.code === "status-unknown" && /finished/.test(f.message)));
-});
-
-test("links parse as a list", () => {
-  const r = parseRegister(reg(P("P1", { status: "active", thread: "topic:5", done_when: "x", links: "LIN-12, JIRA-4" })));
-  assert.deepEqual(r.problems[0].links, ["LIN-12", "JIRA-4"]);
-});
-
-test("a blank thread is a lint error and the entry is active nowhere", () => {
-  const text = reg(P("P1", { status: "active", done_when: "x" }) + "\n" + P("P2", { status: "active", thread: "topic:5", done_when: "y" }));
-  assert.ok(codes(text).includes("thread-blank"));
-  const r = parseRegister(text);
-  for (const thread of ["topic:5", "topic:9", "any", ""]) {
-    const sel = selectForThread(r, thread);
-    assert.notEqual(sel.activeHere?.id, "P1", `P1 went active on ${thread}`);
-  }
-  assert.deepEqual(selectForThread(r, "topic:5").unthreaded.map((p) => p.id), ["P1"]);
-});
-
-test("an active problem with no done-when is a lint error", () => {
-  assert.ok(codes(reg(P("P1", { status: "active", thread: "topic:5" }))).includes("done-when-missing"));
-});
-
-test("a missing mission line is a lint error", () => {
-  assert.ok(lintRegister(parseRegister(P("P1", { status: "proposed", thread: "topic:5" }))).some((f) => f.code === "mission-missing"));
-});
-
-test("a paused problem with no active side task is a lint error", () => {
-  assert.ok(codes(reg(P("P1", { status: "paused", thread: "topic:5" }))).includes("paused-without-active-child"));
-});
-
-test("pending, confirmed and the counts parse as named fields", () => {
-  const r = parseRegister(reg(P("P1", {
-    status: "active", thread: "topic:5", done_when: "x",
-    pending: "drift 2026-10-14", confirmed: "2026-10-13", pushbacks: "2", corrections: "1",
-  })));
-  const p = r.problems[0];
-  assert.deepEqual({ kind: p.pending.kind, date: p.pending.date, known: p.pending.known }, { kind: "drift", date: "2026-10-14", known: true });
-  assert.equal(p.confirmed.date, "2026-10-13");
-  assert.equal(p.pushbacks, 2);
-  assert.equal(p.corrections, 1);
-});
-
-test("an unknown pending kind is a lint error", () => {
-  assert.ok(codes(reg(P("P1", { status: "active", thread: "topic:5", done_when: "x", pending: "ponder 2026-10-14" }))).includes("pending-unknown"));
-});
-
-test("nested bullets are notes, and status notes and done-when spellings are tolerated", () => {
-  const r = parseRegister("Mission: m\n\n## P1. A\n- status: Active (since 10 Oct)\n- done-when: it works\n  - note: nested\n- thread: topic:1\n");
-  assert.equal(r.problems[0].status, "active");
-  assert.equal(r.problems[0].fields["done when"], "it works");
-  assert.equal(r.problems[0].fields.note, undefined);
-});
-
-test("a thread is read out of a session key", () => {
-  assert.equal(threadFromSessionKey("agent:alpha:telegram:group:-1000:topic:42"), "topic:42");
-  assert.ok(threadMatches("topic:42", "topic:42"));
-  assert.ok(threadMatches("42, topic:7", "topic:7"));
-  assert.ok(!threadMatches("topic:4", "topic:42"));
+test("thread from a session key, and thread matching", () => {
+  assert.equal(threadFromSessionKey("agent:a:telegram:group:-100123:topic:1234"), "topic:1234");
+  assert.ok(threadMatches("topic:1234", "topic:1234"));
+  assert.ok(threadMatches("1234, topic:7", "topic:7"));
+  assert.ok(!threadMatches("topic:123", "topic:1234"));
   assert.ok(threadMatches("any", "topic:1"));
   assert.ok(!threadMatches("", "topic:1"));
 });
 
-test("an unreadable file gives the degraded notice instead of throwing", async () => {
-  const root = overlay({ a: reg(P("P1", { status: "active", thread: "topic:5", done_when: "x" })) });
-  const file = path.join(root, "agents", "a", "PROBLEMS.md");
-  chmodSync(file, 0o000);
-  const r = await readRegister({ overlayPath: root }, "a");
-  chmodSync(file, 0o644);
-  assert.equal(r.ok, false);
-  assert.match(r.degraded, /permission/);
+test("no entries shows no problem and the entry instruction", () => {
+  const text = buildInjection(parseRegister("Mission: m\n"), { thread: "topic:5" });
+  assert.match(text, /Thread topic:5: no problem\./);
+  assert.match(text, /frame-problem skill/);
+  assert.doesNotMatch(text, /Check before replying/);
 });
 
-test("a missing agent folder and a missing overlay each give the degraded notice", async () => {
-  const root = overlay({});
-  const missingAgent = await readRegister({ overlayPath: root }, "nobody");
-  assert.equal(missingAgent.ok, false);
-  assert.match(missingAgent.degraded, /no file at/);
-  const noOverlay = await readRegister({}, "a");
-  assert.equal(noOverlay.ok, false);
-  assert.match(noOverlay.degraded, /overlayPath/);
+test("a proposed entry shows awaiting confirmation and no work instruction", () => {
+  const text = buildInjection(parseRegister("Mission: m\n\n## P7. Draft\n- status: proposed\n- thread: topic:5\n"), { thread: "topic:5" });
+  assert.match(text, /awaiting confirmation on P7 Draft/);
+  assert.match(text, /No work on it yet/);
 });
 
-test("a duplicate problem id is a lint error", () => {
-  assert.ok(codes(reg(P("P1", { status: "proposed", thread: "topic:5" }) + "\n" + P("P1", { status: "proposed", thread: "topic:6" }))).includes("duplicate-id"));
+test("an open question becomes the stop line and nothing else is asked", () => {
+  const text = buildInjection(
+    parseRegister("Mission: m\n\n## P1. a\n- status: active\n- thread: topic:1\n- done when: x\n- pending: drift 2026-10-14\n"),
+    { thread: "topic:1" },
+  );
+  const lines = text.split("\n");
+  assert.match(lines[2], /^STOP: waiting for the answer to the drift notice on P1/);
+  assert.match(text, /Do no further work on this thread until they answer/);
+  assert.doesNotMatch(text, /Check before replying/);
 });
 
-test("a parent that is not in the register is a lint error", () => {
-  assert.ok(codes(reg(P("P2", { status: "active", thread: "topic:5", done_when: "x", parent: "P9" }))).includes("parent-unknown"));
+test("the block stays inside its token budget at the worst shape it can take", () => {
+  // Deliberately pathological: five active threads, long titles, a long
+  // problem, a long done-when, the gauge at its high level and a long command
+  // path. R18 budgets the state it lists (thread, active problem, paused
+  // parent, other threads, last parked, mission, gauge) at about 300 tokens;
+  // the per-turn check adds the rest and is what a model that never opens the
+  // focus skill still has in front of it.
+  const reg = `Mission: ten words about the one outcome this agent exists for\n${Array.from({ length: 7 }, (_, i) =>
+    `## P${i + 1}. Problem number ${i + 1} with a reasonably long action title\n- status: ${i < 5 ? "active" : i === 5 ? "parked" : "proposed"}\n- problem: ${"word ".repeat(25)}\n- done when: ${"check ".repeat(20)}\n- rules out: ${"later ".repeat(10)}\n- state: ${"state ".repeat(15)}\n- thread: topic:${i + 1}\n- updated: 2026-10-13\n`,
+  ).join("\n")}`;
+  const o = {
+    thread: "topic:1",
+    reading: { tokens: 520_000, fresh: false, known: true },
+    apsCommand: "node /opt/aps/bin/aps.mjs --overlay /srv/overlay --agent assistant",
+    registerPath: "/srv/overlay/agents/assistant/PROBLEMS.md",
+  };
+  const state = buildInjection(parseRegister(reg), { ...o, includeCheck: false });
+  const full = buildInjection(parseRegister(reg), o);
+  assert.ok(tokens(state) <= 300, `state ${tokens(state)} tokens`);
+  assert.ok(tokens(full) <= 330, `full ${tokens(full)} tokens`);
+
+  // The shape a turn actually meets: one active problem, ordinary lengths.
+  const typical = buildInjection(parseRegister(SAMPLE), { ...o, thread: "topic:11", reading: { tokens: 120_000, fresh: true, known: true } });
+  assert.ok(tokens(typical) <= 310, `typical ${tokens(typical)} tokens`);
+});
+
+test("no instruction tells the agent to switch without asking or to answer first", () => {
+  const text = buildInjection(parseRegister(SAMPLE), { thread: "topic:11", reading: 1000 });
+  assert.doesNotMatch(text, /switch without asking|follow the switch|answer (first|before asking)/i);
+  assert.match(text, /do not switch first/);
+  assert.match(text, /stop work on this thread/);
+});
+
+test("every question the block tells the agent to ask is written down as a pending line", () => {
+  // KTD4: the pending line is what carries the question across a reset, a
+  // compaction or an automated turn, so the block names it every time it asks
+  // the agent to ask something.
+  const onProblem = buildInjection(parseRegister(SAMPLE), { thread: "topic:11", reading: 1000 });
+  assert.match(onProblem, /`pending: switch <date>`/);
+  assert.match(onProblem, /`pending: drift <date>`/);
+  const none = buildInjection(parseRegister("Mission: m\n"), { thread: "topic:5", reading: 1000 });
+  assert.match(none, /`pending: enter <date>`/);
+  const past = buildInjection(parseRegister(SAMPLE), { thread: "topic:11", reading: 520_000 });
+  assert.match(past, /`pending: reset \d{4}-\d{2}-\d{2}`/);
+});
+
+test("an automated turn gets a short block with no prompts", () => {
+  const worst = parseRegister(`${SAMPLE}\n- pending: drift 2026-10-13\n`);
+  const text = buildInjection(worst, { thread: "topic:11", actor: "automated", reading: { tokens: 520_000, fresh: true, known: true } });
+  assert.ok(tokens(text) <= 120, `${tokens(text)} tokens, ${text.length} chars`);
+  assert.doesNotMatch(text, /offer \/new|offer a reset in this reply/);
+  assert.match(text, /ask nothing and offer nothing/);
+  assert.match(text, /on P1 First ten artists emailed/);
+  assert.doesNotMatch(text, /Check before replying/);
+  assert.doesNotMatch(text, /Choose one|options/i);
+});
+
+test("a degraded read is reported, not silence", () => {
+  const text = buildInjection(null, { thread: "topic:1", notice: "Problem register unreadable: EACCES" });
+  assert.match(text, /Problem register unreadable: EACCES/);
+  assert.match(text, /Say so to the person in one line/);
+  assert.doesNotMatch(text, /Thread .*: no problem/);
+});
+
+test("gauge: a count below the level, instructions above each one", () => {
+  assert.equal(gaugeLine(120_000), "Context: 120k tokens.");
+  assert.match(gaugeLine(260_000), /Past 250k: at the next close, park or reframe/);
+  assert.match(gaugeLine(510_000), /Past 500k: write the state down, add `pending: reset .*`, offer \/new now, even mid-problem/);
+  assert.equal(gaugeLine(null), "Context: unknown.");
+  assert.match(gaugeLine({ tokens: 120_000, fresh: false }), /last known/);
+  assert.equal(gaugeLevel(249_000), "ok");
+  assert.equal(gaugeLevel(250_000), "warn");
+  assert.equal(gaugeLevel(500_000), "high");
+});
+
+test("the gauge offers a compact only where compacting shrinks the session", () => {
+  assert.doesNotMatch(gaugeLine(260_000), /compact/);
+  assert.match(gaugeLine(260_000, { canCompact: true }), /\/compact/);
+});
+
+test("no string anywhere promises a 200k ceiling or a percentage", () => {
+  for (const reading of [120_000, 260_000, 510_000, null]) {
+    const line = gaugeLine(reading);
+    assert.doesNotMatch(line, /200k|ceiling|%/);
+  }
+});
+
+test("config: the old ceilingTokens key fails validation", () => {
+  assert.deepEqual(validateConfig({ overlayPath: "/tmp/x" }), []);
+  assert.ok(validateConfig({ overlayPath: "/tmp/x", ceilingTokens: 200_000 }).some((e) => /ceilingTokens is not a config key/.test(e)));
+  assert.ok(validateConfig({}).some((e) => /overlayPath is required/.test(e)));
+  assert.ok(validateConfig({ overlayPath: "/tmp/x", warnTokens: 500_000, highTokens: 250_000 }).some((e) => /highTokens must be above/.test(e)));
+  assert.ok(validateConfig({ overlayPath: "relative/path" }).some((e) => /overlayPath must match/.test(e)));
+  assert.deepEqual(validateConfig({ overlayPath: "/tmp/x", timeZone: "Europe/London" }), []);
+});
+
+test("the same thread written two ways is one thread", () => {
+  const text = "Mission: m\n\n## P1. a\n- status: active\n- thread: 1234\n- done when: x\n\n## P2. b\n- status: active\n- thread: topic:1234\n- done when: y\n";
+  assert.ok(lintCodes(text).includes("two-active"));
+  assert.equal(normaliseThread("1234"), "topic:1234");
+  assert.equal(normaliseThread("TOPIC:1234"), "topic:1234");
+});
+
+test("a repeated id is a lint error", () => {
+  const text = "Mission: m\n\n## P1. a\n- status: parked\n- thread: topic:1\n\n## P1. b\n- status: parked\n- thread: topic:2\n";
+  assert.ok(lintCodes(text).includes("duplicate-id"));
+});
+
+test("no skill tells the agent to act before the operator answers", () => {
+  const dir = new URL("../skills/", import.meta.url);
+  const skills = readdirSync(dir).map((name) => [name, readFileSync(new URL(`${name}/SKILL.md`, dir), "utf8")]);
+  assert.equal(skills.length, 4);
+  for (const [name, text] of skills) {
+    for (const forbidden of [/do that step/i, /without asking/i, /just do them/i, /answer first/i]) {
+      assert.doesNotMatch(text, forbidden, `${name} tells the agent to act before asking`);
+    }
+  }
+  const focus = skills.find(([n]) => n === "focus")[1];
+  assert.match(focus, /Only an explicit choice answers an open question/);
+  assert.match(focus, /aps report/);
+  const frame = skills.find(([n]) => n === "frame-problem")[1];
+  assert.match(frame, /pending: enter <date>/);
+  assert.match(frame, /C4/);
+  assert.match(skills.find(([n]) => n === "reframe")[1], /C4/);
+  assert.match(skills.find(([n]) => n === "close-problem")[1], /pending: close <date>/);
+});
+
+test("an any-thread active entry holds every thread's slot", () => {
+  const text = "Mission: m\n\n## P1. Everywhere\n- status: active\n- thread: any\n- done when: x\n- confirmed: 2026-10-14 active\n\n## P2. Here\n- status: active\n- thread: topic:1\n- done when: y\n- confirmed: 2026-10-14 active\n";
+  assert.ok(lintCodes(text).includes("two-active"), lintCodes(text).join(","));
+  // On its own it is the thread's one active problem, not a rule break.
+  const alone = "Mission: m\n\n## P1. Everywhere\n- status: active\n- thread: any\n- done when: x\n- confirmed: 2026-10-14 active\n";
+  assert.deepEqual(lintCodes(alone), []);
+});
+
+test("the editor and the parser read the same field on a CRLF register", () => {
+  const crlf = "Mission: m\r\n\r\n## P1. Windows\r\n- status: proposed\r\n- thread: topic:1\r\n";
+  const out = setFields(crlf, "P1", { status: "parked", state: "held" });
+  assert.equal(parseRegister(out).problems[0].status, "parked");
+  assert.equal(parseRegister(out).problems[0].fields.state, "held");
+  assert.equal(out.split("\n").filter((l) => l && !l.endsWith("\r")).length, 0, "line endings stay consistent");
+});
+
+test("the reminder names the fields the counts live in", () => {
+  const text = buildInjection(parseRegister(SAMPLE), { thread: "topic:11", reading: 1000 });
+  assert.match(text, /pushbacks:/);
+  assert.match(text, /corrections:/);
+  // R10 says "state line"; the fields are where the parser reads them from.
+  assert.doesNotMatch(text, /counts in the state line|keep them in `state`/i);
 });

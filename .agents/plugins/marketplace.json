@@ -1,0 +1,20 @@
+{
+  "name": "agent-problem-solving",
+  "plugins": [
+    {
+      "name": "agent-problem-solving",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity",
+      "interface": {
+        "displayName": "Agent Problem Solving"
+      }
+    }
+  ]
+}

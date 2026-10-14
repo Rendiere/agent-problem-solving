@@ -1,178 +1,290 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { readLog, today } from "../lib/ledger.js";
-import { overlay, reg, P } from "./helpers.js";
+import { readLedger } from "../lib/ledger.js";
+import { parseRegister } from "../lib/register.js";
+import { today } from "../lib/gauge.js";
 
-const run = promisify(execFile);
 const APS = new URL("../bin/aps.mjs", import.meta.url).pathname;
-const TODAY = today();
+const DAY = today();
 
-async function aps(root, agent, args, { expectFail = false } = {}) {
-  try {
-    const r = await run(process.execPath, [APS, ...args], { env: { ...process.env, APS_OVERLAY: root, APS_AGENT: agent } });
-    if (expectFail) assert.fail(`expected a failure, got:\n${r.stdout}`);
-    return r;
-  } catch (err) {
-    if (!expectFail) assert.fail(`aps ${args.join(" ")} failed: ${err.stderr || err.message}`);
-    return { stdout: err.stdout ?? "", stderr: err.stderr ?? "", code: err.code };
-  }
+// Point the session reader at an empty state directory: the report must not
+// depend on which sessions this machine happens to be running.
+const STATE = mkdtempSync(path.join(tmpdir(), "aps-state-"));
+
+function aps(args, env = {}) {
+  return new Promise((resolve) => {
+    execFile(process.execPath, [APS, ...args], { env: { ...process.env, OPENCLAW_STATE_DIR: STATE, ...env } }, (err, stdout, stderr) => {
+      resolve({ code: err?.code ?? 0, stdout, stderr });
+    });
+  });
 }
 
-const readReg = (root, agent) => readFileSync(path.join(root, "agents", agent, "PROBLEMS.md"), "utf8");
-const logOf = (root, agent) => path.join(root, "agents", agent, "decisions.jsonl");
-
-test("aps set changes a status, stamps the date and logs it once", async () => {
-  const root = overlay({ a: reg(P("P1", { title: "Fix it", status: "proposed", thread: "topic:9", done_when: "it works" })) });
-  const { stdout } = await aps(root, "a", ["set", "P1", "status=active", `confirmed=${TODAY}`]);
-  assert.match(stdout, /logged opened on P1/);
-  const text = readReg(root, "a");
-  assert.match(text, /- status: active/);
-  assert.match(text, new RegExp(`- updated: ${TODAY}`));
-  const lines = await readLog(logOf(root, "a"));
-  assert.equal(lines.filter((l) => l.kind === "opened").length, 1);
-  assert.equal(lines[0].source, "aps set");
-});
-
-test("one aps set followed by a hook run gives exactly one log line", async () => {
-  const root = overlay({ a: reg(P("P1", { title: "Fix it", status: "proposed", thread: "topic:9", done_when: "x" })) });
-  await aps(root, "a", ["set", "P1", "status=active", `confirmed=${TODAY}`]);
-  const plugin = (await import("../index.js")).default;
-  let handler;
-  plugin.register({
-    pluginConfig: { overlayPath: root },
-    on: (n, fn) => { if (n === "before_prompt_build") handler = fn; },
-    runtime: { agent: { session: { getSessionEntry: () => ({ totalTokens: 1000 }) } } },
-  });
-  await handler({ prompt: "hi" }, { agentId: "a", sessionKey: "agent:a:telegram:group:-1:topic:9", trigger: "user", runId: "6cac05bb-423c-4221-a8fa-62db8bb83c18" });
-  const lines = await readLog(logOf(root, "a"));
-  assert.equal(lines.filter((l) => l.kind === "opened" && l.problem === "P1").length, 1, JSON.stringify(lines, null, 1));
-});
-
-test("aps set refuses a second active problem on a thread that already holds one", async () => {
-  const root = overlay({
-    a: reg(P("P1", { status: "active", thread: "topic:9", done_when: "x" }) + "\n" + P("P2", { status: "proposed", thread: "topic:9", done_when: "y" })),
-  });
-  const { stderr } = await aps(root, "a", ["set", "P2", "status=active"], { expectFail: true });
-  assert.match(stderr, /topic:9 has 2 active problems \(P1, P2\)/i);
-  assert.match(readReg(root, "a"), /## P2[\s\S]*- status: proposed/);
-});
-
-test("aps set refuses a second active problem when the thread holds a blocked one", async () => {
-  const root = overlay({
-    a: reg(P("P1", { status: "blocked", thread: "topic:9" }) + "\n" + P("P2", { status: "proposed", thread: "topic:9", done_when: "y" })),
-  });
-  const { stderr } = await aps(root, "a", ["set", "P2", "status=active"], { expectFail: true });
-  assert.match(stderr, /P1 is blocked there/);
-});
-
-test("aps set refuses an unknown status and a blank thread", async () => {
-  const root = overlay({ a: reg(P("P1", { status: "proposed", thread: "topic:9", done_when: "x" }) + "\n" + P("P2", { status: "proposed", done_when: "y" })) });
-  assert.match((await aps(root, "a", ["set", "P1", "status=finished"], { expectFail: true })).stderr, /unknown status 'finished'/);
-  assert.match((await aps(root, "a", ["set", "P2", "status=active"], { expectFail: true })).stderr, /has no thread/);
-});
-
-test("a side task going active pauses its parent, and closing it resumes the parent", async () => {
-  const root = overlay({
-    a: reg(
-      P("P1", { title: "Email ten artists", status: "active", thread: "topic:9", done_when: "ten sent" }) + "\n" +
-      P("P2", { title: "Find fifty addresses", status: "proposed", parent: "P1", thread: "topic:9", done_when: "fifty found" }),
-    ),
-  });
-  await aps(root, "a", ["set", "P2", "status=active", `confirmed=${TODAY}`]);
-  let text = readReg(root, "a");
-  assert.match(text, /## P1[\s\S]*?- status: paused/);
-  assert.match(text, /## P2[\s\S]*?- status: active/);
-
-  await aps(root, "a", ["set", "P2", "status=done", `confirmed=${TODAY}`]);
-  text = readReg(root, "a");
-  assert.match(text, /## P1[\s\S]*?- status: active/);
-  const lines = await readLog(logOf(root, "a"));
-  assert.ok(lines.some((l) => l.kind === "closed" && l.problem === "P2"));
-  assert.ok(lines.some((l) => l.kind === "resumed" && l.problem === "P1"));
-});
-
-test("two aps set calls in quick succession both land", async () => {
-  const root = overlay({
-    a: reg(P("P1", { status: "active", thread: "topic:9", done_when: "x" }) + "\n" + P("P2", { status: "proposed", thread: "topic:8", done_when: "y" })),
-  });
-  await Promise.all([
-    aps(root, "a", ["set", "P1", "state=paused for now"]),
-    aps(root, "a", ["set", "P2", "status=active", `confirmed=${TODAY}`]),
-  ]);
-  const text = readReg(root, "a");
-  assert.match(text, /- state: paused for now/);
-  assert.match(text, /## P2[\s\S]*?- status: active/);
-});
-
-test("aps set clears a pending line and records the choice", async () => {
-  const root = overlay({ a: reg(P("P1", { status: "active", thread: "topic:9", done_when: "x", pending: `drift ${TODAY}` })) });
-  await aps(root, "a", ["set", "P1", "pending=", "state=back on the quest"]);
-  assert.doesNotMatch(readReg(root, "a"), /- pending:/);
-  const notice = (await readLog(logOf(root, "a"))).find((l) => l.kind === "drift notice");
-  assert.equal(notice.outcome, "stay");
-});
-
-test("aps add drafts a proposed entry with the next id", async () => {
-  const root = overlay({ a: reg(P("P1", { status: "active", thread: "topic:9", done_when: "x" })) });
-  const { stdout } = await aps(root, "a", ["add", "Win the first ten artists", "thread=topic:9", "done-when=ten sent", "problem=nobody has heard of it"]);
-  assert.match(stdout, /^P2 Win the first ten artists/);
-  assert.match(readReg(root, "a"), /## P2\. Win the first ten artists[\s\S]*- status: proposed/);
-});
-
-test("aps lint reports every register and exits non-zero on a finding", async () => {
-  const root = overlay({
-    a: reg(P("P1", { status: "active", thread: "topic:9", done_when: "x" })),
-    b: reg(P("P1", { status: "active", thread: "topic:9" })),
-  });
-  const ok = await aps(root, "a", ["lint", "--agent", "a"]);
-  assert.match(ok.stdout, /a: clean/);
-  const bad = await aps(root, "b", ["lint"], { expectFail: true });
-  assert.match(bad.stdout, /done-when-missing/);
-});
-
-test("aps report lists a parked problem per agent and flags one untouched for eight days", async () => {
-  const old = new Date(Date.now() - 8 * 86_400_000).toISOString().slice(0, 10);
-  const root = overlay({
-    a: reg(P("P1", { title: "Referral links", status: "parked", thread: "topic:1", state: "copy drafted", updated: "2026-10-01" })),
-    b: reg(P("P1", { title: "Pricing page", status: "parked", thread: "topic:2", state: "waiting on them", updated: "2026-10-02" })),
-    c: reg(
-      P("P1", { title: "Quote tool", status: "parked", thread: "topic:3", state: "blocked on the API", updated: "2026-10-03" }) + "\n" +
-      P("P2", { title: "Stale work", status: "active", thread: "topic:4", done_when: "x", updated: old }),
-    ),
-  });
-  const { stdout } = await aps(root, "a", ["report"]);
-  for (const t of ["Referral links", "Pricing page", "Quote tool"]) assert.match(stdout, new RegExp(t));
-  assert.match(stdout, /Active, untouched 7\+ days:/);
-  assert.match(stdout, /P2 Stale work \(8d\)/);
-
-  const json = JSON.parse((await aps(root, "a", ["report", "--json"])).stdout);
-  assert.deepEqual(json.agents.map((x) => x.agent), ["a", "b", "c"]);
-  assert.equal(json.agents[2].stale[0].id, "P2");
-});
-
-test("aps report lists a pending question older than a day", async () => {
-  const root = overlay({ a: reg(P("P1", { status: "active", thread: "topic:9", done_when: "x", pending: "drift 2026-10-01" })) });
-  assert.match((await aps(root, "a", ["report"])).stdout, /Waiting on an answer:[\s\S]*drift asked 2026-10-01/);
-});
-
-test("aps doctor reports each check and fails when the overlay is incomplete", async () => {
-  const root = overlay({ a: reg(P("P1", { status: "active", thread: "topic:9", done_when: "x" })) });
-  const r = await aps(root, "a", ["doctor"], { expectFail: true });
-  assert.match(r.stdout, /^ok   overlay found/m);
-  assert.match(r.stdout, /FAIL deny-list present/);
-  assert.match(r.stdout, /^ok   a: register lint clean/m);
-  assert.match(r.stdout, /^ok   a: reminder builds/m);
-});
-
-test("aps refuses to run with no overlay", async () => {
-  try {
-    await run(process.execPath, [APS, "report"], { env: { ...process.env, APS_OVERLAY: "", APS_AGENT: "a" } });
-    assert.fail("expected a failure");
-  } catch (err) {
-    assert.match(err.stderr, /no overlay/);
+function overlay(registers) {
+  const dir = mkdtempSync(path.join(tmpdir(), "aps-cli-"));
+  for (const [agent, text] of Object.entries(registers)) {
+    mkdirSync(path.join(dir, "agents", agent), { recursive: true });
+    writeFileSync(path.join(dir, "agents", agent, "PROBLEMS.md"), text);
   }
+  return dir;
+}
+
+const entry = (id, title, fields) => `## ${id}. ${title}\n${Object.entries(fields).map(([k, v]) => `- ${k}: ${v}`).join("\n")}\n`;
+
+const ONE = `Mission: one line about the outcome\n\n${entry("P1", "First problem", { status: "active", thread: "topic:1", "done when": "x", confirmed: `${DAY} active`, updated: DAY })}\n${entry("P2", "Second problem", { status: "proposed", thread: "topic:1" })}`;
+
+test("set stamps the date, logs the change and keeps the rest of the file", async () => {
+  const dir = overlay({ a: ONE });
+  const r = await aps(["set", "P1", "state=waiting on the clinic", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  const text = readFileSync(path.join(dir, "agents", "a", "PROBLEMS.md"), "utf8");
+  assert.match(text, /- state: waiting on the clinic/);
+  assert.match(text, /- updated: \d{4}-\d{2}-\d{2}/);
+  assert.match(text, /## P2\. Second problem/);
+});
+
+test("set rejects an unknown status", async () => {
+  const dir = overlay({ a: ONE });
+  const r = await aps(["set", "P1", "status=finished", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /unknown status "finished"/);
+});
+
+test("set refuses a second active problem in the same thread", async () => {
+  const dir = overlay({ a: ONE });
+  const r = await aps(["set", "P2", "status=active", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /already holds P1 \(active\)/);
+});
+
+test("set refuses to make an entry with no thread active", async () => {
+  const dir = overlay({ a: `Mission: m\n\n${entry("P9", "Loose", { status: "proposed" })}` });
+  const r = await aps(["set", "P9", "status=active", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /has no thread/);
+});
+
+test("a side task takes the thread and pauses its parent; closing it hands the thread back", async () => {
+  const dir = overlay({ a: `${ONE}\n${entry("P3", "Side task", { status: "proposed", thread: "topic:1", parent: "P1", "done when": "the script runs" })}` });
+  const file = path.join(dir, "agents", "a", "PROBLEMS.md");
+  let r = await aps(["set", "P3", "status=active", "--agent", "a", "--confirmed"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  let text = readFileSync(file, "utf8");
+  assert.match(text.split("## P1.")[1], /- status: paused/);
+  assert.match(text.split("## P3.")[1], /- status: active/);
+
+  r = await aps(["set", "P3", "status=done", "learned=one line", "--agent", "a", "--confirmed"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  text = readFileSync(file, "utf8");
+  assert.match(text.split("## P1.")[1], /- status: active/);
+  // The operator's yes to the close covers the parent coming back, so the
+  // resume carries today's confirmation and the report does not flag it.
+  assert.match(text.split("## P1.")[1], new RegExp(`- confirmed: ${DAY} resumed`));
+  const rows = await readLedger(path.join(dir, "agents", "a", "decisions.jsonl"));
+  assert.deepEqual(rows.filter((e) => e.flag).map((e) => `${e.problem}: ${e.flag}`), [], "a normal side-task close flags nothing");
+  const kinds = rows.map((e) => `${e.problem}:${e.kind}`);
+  assert.ok(kinds.includes("P3:closed"), kinds.join(","));
+  assert.ok(kinds.includes("P1:switched"), kinds.join(","));
+  assert.ok(kinds.includes("P1:paused"), kinds.join(","));
+});
+
+test("two set calls in quick succession both land", async () => {
+  const dir = overlay({ a: ONE });
+  const [x, y] = await Promise.all([
+    aps(["set", "P1", "pushbacks=1", "--agent", "a"], { APS_OVERLAY: dir }),
+    aps(["set", "P2", "state=drafted", "--agent", "a"], { APS_OVERLAY: dir }),
+  ]);
+  assert.equal(x.code, 0, x.stderr);
+  assert.equal(y.code, 0, y.stderr);
+  const text = readFileSync(path.join(dir, "agents", "a", "PROBLEMS.md"), "utf8");
+  assert.match(text, /- pushbacks: 1/);
+  assert.match(text, /- state: drafted/);
+});
+
+test("one set followed by a hook-style diff gives exactly one log line", async () => {
+  const dir = overlay({ a: ONE });
+  const r = await aps(["set", "P2", "status=parked", "state=not now", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  const { logHandEdits } = await import("../lib/ledger.js");
+  const extra = await logHandEdits({
+    registerFile: path.join(dir, "agents", "a", "PROBLEMS.md"),
+    snapshotFile: path.join(dir, "state", "a.snapshot.json"),
+    ledgerFile: path.join(dir, "agents", "a", "decisions.jsonl"),
+    agent: "a",
+    actor: "person",
+  });
+  assert.deepEqual(extra, []);
+  const rows = await readLedger(path.join(dir, "agents", "a", "decisions.jsonl"));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "parked");
+  assert.equal(rows[0].source, "aps");
+});
+
+test("lint reports the rule it broke and exits 1", async () => {
+  const dir = overlay({ a: `Mission: m\n\n${entry("P1", "a", { status: "active", thread: "topic:1", "done when": "x", confirmed: `${DAY} active` })}\n${entry("P2", "b", { status: "active", thread: "topic:1", "done when": "y", confirmed: `${DAY} active` })}` });
+  const r = await aps(["lint", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /holds 2 active problems/);
+});
+
+test("lint passes on the seeded register", async () => {
+  const dir = overlay({ a: ONE });
+  const r = await aps(["lint", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stdout);
+  assert.match(r.stdout, /clean/);
+});
+
+test("report covers three agents, each parked problem and a stale one", async () => {
+  const stale = "2026-01-01";
+  const dir = overlay({
+    a: `Mission: m\n\n${entry("P1", "Alpha parked", { status: "parked", thread: "topic:1", state: "waiting", updated: DAY })}\n${entry("P2", "Alpha stale", { status: "active", thread: "topic:2", "done when": "x", confirmed: `${stale} active`, updated: stale })}`,
+    b: `Mission: m\n\n${entry("P1", "Bravo parked", { status: "parked", thread: "topic:3", updated: DAY })}`,
+    c: `Mission: m\n\n${entry("P1", "Charlie parked", { status: "parked", thread: "topic:4", updated: DAY })}\n${entry("P2", "Charlie waiting", { status: "active", thread: "topic:5", "done when": "y", pending: "drift 2026-01-02", confirmed: `${DAY} active`, updated: DAY })}`,
+  });
+  const r = await aps(["report"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  for (const name of ["Alpha parked", "Bravo parked", "Charlie parked"]) assert.match(r.stdout, new RegExp(name));
+  assert.match(r.stdout, /untouched 7\+ days: P2 Alpha stale/);
+  assert.match(r.stdout, /waiting on an answer: P2 drift/);
+  assert.match(r.stdout, /largest live session/);
+
+  const j = await aps(["report", "--json"], { APS_OVERLAY: dir });
+  const parsed = JSON.parse(j.stdout);
+  assert.equal(parsed.agents.length, 3);
+  assert.equal(parsed.agents[0].parked[0].id, "P1");
+});
+
+test("no overlay is an error, not a stack trace", async () => {
+  const r = await aps(["lint"], { APS_OVERLAY: "" });
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /no overlay/);
+});
+
+test("a rejected set leaves no lock behind", async () => {
+  const dir = overlay({ a: ONE });
+  const bad = await aps(["set", "P2", "status=active", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.equal(bad.code, 2);
+  // A lock left by a rejected call would stall the next call and every hook
+  // turn for as long as it took to go stale, so assert on the lock itself
+  // rather than on how long the next call took: on a slow machine process
+  // start-up swamps the lock wait and the timing says nothing.
+  const locks = existsSync(path.join(dir, "state")) ? readdirSync(path.join(dir, "state")).filter((n) => n.includes(".lock")) : [];
+  assert.deepEqual(locks, []);
+  const ok = await aps(["set", "P2", "state=still proposed", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.equal(ok.code, 0, ok.stderr);
+});
+
+test("set refuses to move an active problem into an occupied thread", async () => {
+  const dir = overlay({
+    a: `${ONE}\n${entry("P3", "Elsewhere", { status: "active", thread: "topic:2", "done when": "z", confirmed: `${DAY} active`, updated: DAY })}`,
+  });
+  const r = await aps(["set", "P3", "thread=topic:1", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /already holds P1 \(active\)/);
+});
+
+test("an odd field name is still the field it looks like", async () => {
+  const dir = overlay({ a: ONE });
+  const r = await aps(["set", "P2", "status =finished", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /unknown status "finished"/);
+  const text = readFileSync(path.join(dir, "agents", "a", "PROBLEMS.md"), "utf8");
+  assert.equal((text.match(/- status:/g) ?? []).length, 2, "nothing was written");
+});
+
+test("set edits the line the parser reads when a field is repeated", async () => {
+  const dir = overlay({ a: `Mission: m\n\n${entry("P1", "Repeated", { status: "parked", thread: "topic:1" })}- status: parked\n` });
+  const r = await aps(["set", "P1", "status=dropped", "--agent", "a", "--confirmed"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  const text = readFileSync(path.join(dir, "agents", "a", "PROBLEMS.md"), "utf8");
+  assert.equal((text.match(/- status:/g) ?? []).length, 1);
+  assert.match(text, /- status: dropped/);
+  assert.match(r.stdout, /P1 dropped/);
+});
+
+test("the template lints clean", async () => {
+  const dir = overlay({ a: readFileSync(new URL("../templates/PROBLEMS.md", import.meta.url), "utf8") });
+  const r = await aps(["lint", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stdout);
+  assert.match(r.stdout, /clean/);
+});
+
+test("lint --all skips an agent folder with no register", async () => {
+  const dir = overlay({ a: ONE });
+  mkdirSync(path.join(dir, "agents", "b"), { recursive: true });
+  const r = await aps(["lint", "--all"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stdout);
+  assert.doesNotMatch(r.stdout, /^b /m);
+});
+
+test("report treats a missing date as overdue, not as fresh", async () => {
+  const dir = overlay({
+    a: `Mission: m\n\n${entry("P1", "No date", { status: "active", thread: "topic:1", "done when": "x", confirmed: `${DAY} active` })}\n${entry("P2", "Open question", { status: "parked", thread: "topic:2", pending: "drift" })}`,
+  });
+  const r = await aps(["report", "--agents", "a"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /untouched 7\+ days: P1 No date \(no date\)/);
+  assert.match(r.stdout, /waiting on an answer: P2 drift \(no date\)/);
+});
+
+test("report counts the operator's turns above the warning level, not the automated ones", async () => {
+  const dir = overlay({ a: ONE });
+  const { recordTurn } = await import("../lib/ledger.js");
+  const turns = path.join(dir, "agents", "a", "turns.json");
+  await recordTurn(turns, { day: DAY, actor: "person", level: "warn" });
+  await recordTurn(turns, { day: DAY, actor: "person", level: "ok" });
+  await recordTurn(turns, { day: DAY, actor: "automated", level: "high" });
+  const r = await aps(["report", "--agents", "a"], { APS_OVERLAY: dir });
+  assert.match(r.stdout, /2 from the operator, 1 automated, 50% of theirs above the warning level/);
+});
+
+test("set refuses a second active problem when an any-thread entry holds the slot", async () => {
+  const dir = overlay({
+    a: `Mission: m\n\n${entry("P1", "Everywhere", { status: "active", thread: "any", "done when": "x", confirmed: `${DAY} active`, updated: DAY })}\n${entry("P2", "Mine", { status: "proposed", thread: "topic:1", "done when": "y" })}`,
+  });
+  const r = await aps(["set", "P2", "status=active", "--agent", "a", "--confirmed"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 2, r.stdout);
+  assert.match(r.stderr, /already holds P1 \(active\)/);
+});
+
+test("set refuses a second active problem when the holder names several threads", async () => {
+  const dir = overlay({
+    a: `Mission: m\n\n${entry("P1", "Two threads", { status: "active", thread: "topic:1, topic:2", "done when": "x", confirmed: `${DAY} active`, updated: DAY })}\n${entry("P2", "Mine", { status: "proposed", thread: "topic:2", "done when": "y" })}`,
+  });
+  const r = await aps(["set", "P2", "status=active", "--agent", "a", "--confirmed"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 2, r.stdout);
+  assert.match(r.stderr, /already holds P1 \(active\)/);
+});
+
+test("set changes the status the parser reads in a register with CRLF line endings", async () => {
+  const dir = overlay({ a: "Mission: m\r\n\r\n## P1. Windows\r\n- status: proposed\r\n- thread: topic:1\r\n- done when: x\r\n" });
+  const r = await aps(["set", "P1", "status=parked", "state=held", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  const text = readFileSync(path.join(dir, "agents", "a", "PROBLEMS.md"), "utf8");
+  assert.equal(parseRegister(text).problems[0].status, "parked", text.replace(/\r/g, "<CR>"));
+  const mixed = text.split("\n").slice(0, -1).filter((l) => !l.endsWith("\r"));
+  assert.deepEqual(mixed, [], "the file keeps one kind of line ending");
+  assert.match(r.stdout, /P1 parked/);
+});
+
+test("set refuses an id that appears twice rather than editing the wrong one", async () => {
+  const dir = overlay({
+    a: `Mission: m\n\n${entry("P1", "First", { status: "parked", thread: "topic:1" })}\n${entry("P1", "Second", { status: "parked", thread: "topic:2" })}`,
+  });
+  const r = await aps(["set", "P1", "status=dropped", "--agent", "a", "--confirmed"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 2, r.stdout);
+  assert.match(r.stderr, /P1 appears twice/);
+  const text = readFileSync(path.join(dir, "agents", "a", "PROBLEMS.md"), "utf8");
+  assert.doesNotMatch(text, /dropped/, "nothing was written");
+});
+
+test("set refuses a change that would break a rule the register has to keep", async () => {
+  const dir = overlay({ a: `Mission: m\n\n${entry("P9", "No done-when", { status: "proposed", thread: "topic:9" })}` });
+  const r = await aps(["set", "P9", "status=active", "--agent", "a", "--confirmed"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 2, r.stdout);
+  assert.match(r.stderr, /done when/);
+  assert.match(readFileSync(path.join(dir, "agents", "a", "PROBLEMS.md"), "utf8"), /- status: proposed/);
 });

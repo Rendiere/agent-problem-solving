@@ -1,89 +1,98 @@
 #!/usr/bin/env node
-// aps — the one command that changes a problem's status.
+// aps — the layer-1 command. Changes a problem's status, lints a register and
+// prints the report. It works with no plugin and no gateway: a register, this
+// command and the method skill are enough to run the method by hand.
 //
-// It validates the change, stamps the date, applies the side-task pause and
-// resume rule, writes the decision log and advances the agent's snapshot, all
-// under one lock (KTD5, KTD6). It needs no gateway and no plugin, so layer 1 of
-// the method works on any runtime that can run a command.
+//   aps set P2 status=parked state="waiting on the clinic" [--confirmed]
+//   aps lint [--agent <id> | --all]
+//   aps report [--agents <id>,<id>] [--json] [--stale-days 7] [--hours 24]
 //
-//   aps set P4 status=active confirmed=2026-10-14
-//   aps add "Send the first ten notes" problem="…" done-when="…" thread=topic:42
-//   aps lint
-//   aps report [--json]
-//   aps doctor
+// The overlay comes from --overlay or APS_OVERLAY; the agent from --agent,
+// APS_AGENT, or the overlay when it holds exactly one agent.
 
-import { readFile, writeFile, readdir, stat } from "node:fs/promises";
+import { readFile, writeFile, readdir, mkdir, rename, access } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { parseRegister, lintRegister, STATUSES, PENDING_KINDS } from "../lib/register.js";
-import { setFields, setTitle, addProblem, nextId } from "../lib/edit.js";
+import { parseRegister, lintRegister, threadsOverlap, STATUSES } from "../lib/register.js";
+import { setFields } from "../lib/edit.js";
+import { today } from "../lib/gauge.js";
+import { registerPath, ledgerPath, snapshotPath, turnsPath, turnPath, turnDir, agentIdError, DEFAULT_REGISTER_FILE } from "../lib/paths.js";
 import {
-  appendLog, diffRegister, readCounts, readLog, readSnapshot, readTurnMarker, snapshotOf, withLock, writeSnapshot, today,
+  snapshotOf,
+  diffSnapshots,
+  readSnapshot,
+  writeSnapshot,
+  appendLedger,
+  readLedger,
+  readTurns,
+  readTurnMarker,
+  readNewestTurnMarker,
+  actorFromMarker,
+  withLock,
+  flagFor,
+  stamp,
+  BUSY,
 } from "../lib/ledger.js";
-import { DEFAULT_REGISTER_FILE, LOG_FILE } from "../lib/store.js";
+import { sessionSizes } from "../adapters/openclaw/sessions.js";
+import { threadForCli } from "../adapters/cli/runtime.js";
+import {
+  installClaudeCode, installCodex, installOpenClaw, installAgentsMd, writeSettings, installStatus,
+  claudeConfigDir, codexHome, openclawConfigFile, agentsSkillsDir, skillNames,
+  prepareOverlay, settleCore, stableHome, installBin,
+} from "../lib/install.js";
+import { settingsDir, runtimeConfig } from "../lib/settings.js";
+import { packageRoot } from "../lib/self.js";
+import { existsSync } from "node:fs";
 
-const USAGE = `aps — problem register and decision log
+const argv = process.argv.slice(2);
 
-  aps set <P<n>> <field>=<value> …   change a status or a field
-  aps add "<action title>" <field>=<value> …   draft a new proposed entry
-  aps lint [--agent <id>]            check one register, or every one
-  aps report [--json]                parked, stale, pending, session sizes
-  aps doctor                         is the install sound?
+// Thrown inside a locked section so the lock is released before the process
+// exits; process.exit() would skip the release and stall the next writer.
+class UserError extends Error {}
 
-  --overlay <path>   overlay root (default: $APS_OVERLAY)
-  --agent <id>       agent id (default: $APS_AGENT)
-`;
-
-function parseArgv(argv) {
-  const flags = {};
-  const rest = [];
-  for (let i = 0; i < argv.length; i += 1) {
-    const a = argv[i];
-    if (a === "--json" || a === "--help" || a === "-h") flags[a.replace(/^-+/, "")] = true;
-    else if (a.startsWith("--")) flags[a.slice(2)] = argv[++i];
-    else rest.push(a);
-  }
-  return { flags, rest };
-}
-
-function pairs(args) {
-  const out = {};
-  for (const a of args) {
-    const i = a.indexOf("=");
-    if (i < 1) throw new Error(`expected field=value, got '${a}'`);
-    out[a.slice(0, i).trim().toLowerCase().replace(/[-_]+/g, " ")] = a.slice(i + 1);
-  }
-  return out;
-}
-
-function die(msg, code = 1) {
-  process.stderr.write(`aps: ${msg}\n`);
+function die(message, code = 2) {
+  console.error(`aps: ${message}`);
   process.exit(code);
 }
 
-const cfgFrom = (flags) => ({
-  overlayPath: flags.overlay ?? process.env.APS_OVERLAY ?? "",
-  registerFile: process.env.APS_REGISTER_FILE ?? DEFAULT_REGISTER_FILE,
-});
-
-function resolveOverlay(flags) {
-  const root = cfgFrom(flags).overlayPath;
-  if (!root) die("no overlay. Pass --overlay <path> or set APS_OVERLAY.");
-  return path.resolve(root);
+function flag(name) {
+  const i = argv.indexOf(`--${name}`);
+  if (i < 0) return null;
+  const value = argv[i + 1];
+  if (!value || value.startsWith("--")) die(`--${name} needs a value`);
+  return value;
 }
 
-const stateDirOf = (overlay) => process.env.APS_STATE_DIR ?? path.join(overlay, ".state");
-const agentDirOf = (overlay, agent) => path.join(overlay, "agents", agent);
-const registerOf = (overlay, agent, flags) => path.join(agentDirOf(overlay, agent), cfgFrom(flags).registerFile);
-const logOf = (overlay, agent) => path.join(agentDirOf(overlay, agent), LOG_FILE);
+const has = (name) => argv.includes(`--${name}`);
 
-function resolveAgent(flags) {
-  const a = flags.agent ?? process.env.APS_AGENT ?? "";
-  if (!a) die("no agent. Pass --agent <id> or set APS_AGENT.");
-  return a;
+// Flags that stand alone. Anything else spelled --x takes the next token as its
+// value, so a positional argument is never confused with one.
+const SWITCHES = new Set(["dry-run", "status", "json", "all", "help", "confirmed", "clear-pending", "all-projects"]);
+
+/** The arguments that are not flags and not a flag's value. */
+function positional(from = 0) {
+  const out = [];
+  for (let i = from; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (!a.startsWith("--")) {
+      out.push(a);
+      continue;
+    }
+    if (!SWITCHES.has(a.slice(2))) i += 1;
+  }
+  return out;
+}
+const config = () => runtimeConfig();
+const day = () => today(new Date(), flag("tz") ?? config().timeZone ?? undefined);
+
+function overlayDir() {
+  const dir = flag("overlay") ?? config().overlayPath;
+  if (!dir) die("no overlay: pass --overlay <path> or set APS_OVERLAY");
+  if (!path.isAbsolute(dir)) die(`the overlay path must be absolute, not "${dir}"`);
+  return path.resolve(dir);
 }
 
-async function listAgents(overlay) {
+async function agentsIn(overlay) {
   try {
     const entries = await readdir(path.join(overlay, "agents"), { withFileTypes: true });
     return entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();
@@ -92,304 +101,504 @@ async function listAgents(overlay) {
   }
 }
 
-const daysSince = (date) => {
-  const t = Date.parse(date ?? "");
-  return Number.isNaN(t) ? null : Math.floor((Date.now() - t) / 86_400_000);
+async function oneAgent(overlay) {
+  const named = flag("agent") ?? config().agentId;
+  if (named) {
+    const bad = agentIdError(named);
+    if (bad) die(bad);
+    return named;
+  }
+  const all = await agentsIn(overlay);
+  if (all.length === 1) return all[0];
+  die(`pass --agent: the overlay holds ${all.length} agents (${all.join(", ") || "none"})`);
+}
+
+const registerFile = () => flag("register") ?? config().registerFile ?? DEFAULT_REGISTER_FILE;
+
+const exists = async (file) => {
+  try {
+    await access(file);
+    return true;
+  } catch {
+    return false;
+  }
 };
 
-// ------------------------------------------------------------------ set
+async function writeAtomic(file, text) {
+  await mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}`;
+  await writeFile(tmp, text, "utf8");
+  await rename(tmp, file);
+}
 
-/** Everything `aps set` refuses, checked against the register as it will be. */
-function validate(before, after, id, changes) {
-  const p = after.problems.find((x) => x.id === id);
-  if (!p) throw new Error(`${id} is not in the register`);
-  if (changes.status !== undefined) {
-    if (!STATUSES.includes(p.status)) {
-      throw new Error(`unknown status '${changes.status}'. Use one of: ${STATUSES.join(", ")}`);
-    }
+const daysAgo = (iso, from = new Date()) => {
+  const t = Date.parse(iso ?? "");
+  return Number.isNaN(t) ? null : Math.floor((from.getTime() - t) / 86_400_000);
+};
+
+// ---------------------------------------------------------------- aps set
+
+function parseAssignments(args) {
+  const fields = {};
+  for (const arg of args) {
+    if (arg.startsWith("--")) break;
+    const m = arg.match(/^([a-zA-Z][\w -]*)=(.*)$/s);
+    if (!m) die(`"${arg}" is not field=value`);
+    const key = m[1].toLowerCase().replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+    if (!key) die(`"${arg}" has no field name`);
+    if (fields[key] !== undefined) die(`${key} given twice`);
+    fields[key] = m[2];
   }
-  if (changes.pending !== undefined && p.pending && !PENDING_KINDS.includes(p.pending.kind)) {
-    throw new Error(`unknown pending kind '${p.pending.kind}'. Use one of: ${PENDING_KINDS.join(", ")}`);
-  }
-  const open = !["done", "dropped"].includes(p.status);
-  if (open && !p.thread) throw new Error(`${id} has no thread. Set thread=<thread> in the same call.`);
-
-  const beforeFindings = new Set(lintRegister(before).map((f) => `${f.code}|${f.problem ?? ""}|${f.message}`));
-  const newFindings = lintRegister(after).filter(
-    (f) => !beforeFindings.has(`${f.code}|${f.problem ?? ""}|${f.message}`),
-  );
-  if (newFindings.length) {
-    throw new Error(newFindings.map((f) => f.message).join("; "));
-  }
-  return p;
+  return fields;
 }
 
-/**
- * The side-task rule, both ways (R9): a side task going active pauses its
- * parent, and a side task leaving active resumes it.
- */
-function sideTaskMoves(before, after, id) {
-  const now = after.problems.find((x) => x.id === id);
-  const was = before.problems.find((x) => x.id === id);
-  if (!now?.parent) return [];
-  const parent = after.problems.find((x) => x.id === now.parent);
-  if (!parent) return [];
-  const becameActive = now.status === "active" && was?.status !== "active";
-  const leftActive = was?.status === "active" && now.status !== "active";
-  if (becameActive && parent.status === "active") return [[parent.id, { status: "paused", updated: today() }]];
-  if (leftActive && parent.status === "paused") return [[parent.id, { status: "active", updated: today() }]];
-  return [];
+/** Lint errors in `after` that `before` did not already have. */
+function newErrors(before, after) {
+  const had = new Set(before.filter((f) => f.level === "error").map((f) => `${f.code}:${f.id ?? ""}`));
+  return after.filter((f) => f.level === "error" && !had.has(`${f.code}:${f.id ?? ""}`));
 }
 
-async function cmdSet({ flags, rest }) {
-  const overlay = resolveOverlay(flags);
-  const agent = resolveAgent(flags);
-  const [id, ...args] = rest;
-  if (!/^P\d+$/.test(id ?? "")) die("first argument must be a problem id, e.g. P4");
-  const changes = pairs(args);
-  if (!Object.keys(changes).length) die("nothing to set");
+async function cmdSet() {
+  const words = positional(0);
+  const id = words[1];
+  if (!id) die("usage: aps set <ID> field=value [field=value…]");
+  const fields = parseAssignments(words.slice(2));
+  if (!Object.keys(fields).length) die("nothing to set");
 
-  const file = registerOf(overlay, agent, flags);
-  const stateDir = stateDirOf(overlay);
+  const overlay = overlayDir();
+  const agent = await oneAgent(overlay);
+  const file = registerPath(overlay, agent, registerFile());
+  const snapFile = snapshotPath(overlay, agent);
+  if (!(await exists(file))) die(`no register at ${file}`);
+  const stampDay = day();
+  const markerThread = flag("thread") ?? threadForCli(process.cwd());
+  const markerSession = flag("session") ?? null;
+  const marker = markerSession
+    ? await readTurnMarker(turnPath(overlay, agent, markerThread, markerSession))
+    : await readNewestTurnMarker(turnDir(overlay, agent, markerThread));
+  const actor = actorFromMarker(marker);
 
-  await withLock(stateDir, agent, async () => {
-    const text = await readFile(file, "utf8");
-    const before = parseRegister(text);
-    const title = changes.title;
-    delete changes.title;
-    if (changes.status !== undefined) changes.updated = changes.updated ?? today();
-
-    let next = setFields(text, id, changes);
-    if (title !== undefined) next = setTitle(next, id, title);
-
-    // The side-task rule runs before the checks: a side task going active is
-    // allowed to take the thread's slot precisely because its parent pauses in
-    // the same move (R9), so the final state is what gets validated.
-    for (const [pid, fields] of sideTaskMoves(before, parseRegister(next), id)) {
-      next = setFields(next, pid, fields);
-    }
-    const after = parseRegister(next);
-    validate(before, after, id, changes);
-
-    const problems = lintRegister(after).filter((e) => e.problem === id);
-    if (problems.length) throw new Error(problems.map((e) => e.message).join("; "));
-
-    await writeFile(file, next, "utf8");
-    const baseline = (await readSnapshot(stateDir, agent)) ?? snapshotOf(before);
-    const actor = (await readTurnMarker(stateDir, agent))?.actor ?? "person";
-    const entries = diffRegister(baseline, after, { actor });
-    await appendLog(logOf(overlay, agent), entries, { agent, source: "aps set", actor });
-    await writeSnapshot(stateDir, agent, snapshotOf(after));
-    process.stdout.write(
-      `${id} ${Object.entries(changes).map(([k, v]) => `${k}=${v}`).join(" ")}\n` +
-        entries.map((e) => `  logged ${e.kind}${e.flag ? ` (flagged: ${e.flag})` : ""} on ${e.problem}`).join("\n") +
-        (entries.length ? "\n" : ""),
-    );
-  }).catch((err) => die(err.message));
-}
-
-async function cmdAdd({ flags, rest }) {
-  const overlay = resolveOverlay(flags);
-  const agent = resolveAgent(flags);
-  const [title, ...args] = rest;
-  if (!title) die('first argument must be the action title, e.g. "Win the first ten artists"');
-  const fields = pairs(args);
-  const file = registerOf(overlay, agent, flags);
-  const stateDir = stateDirOf(overlay);
-
-  await withLock(stateDir, agent, async () => {
-    const text = await readFile(file, "utf8");
-    const id = nextId(parseRegister(text));
-    const before = parseRegister(text);
-    const next = addProblem(text, id, title, { status: "proposed", updated: today(), ...fields });
-    const after = parseRegister(next);
-    const bad = lintRegister(after).filter((e) => e.problem === id);
-    if (bad.length) throw new Error(bad.map((e) => e.message).join("; "));
-    await writeFile(file, next, "utf8");
-    const actor = (await readTurnMarker(stateDir, agent))?.actor ?? "person";
-    const entries = diffRegister((await readSnapshot(stateDir, agent)) ?? snapshotOf(before), after, { actor });
-    await appendLog(logOf(overlay, agent), entries, { agent, source: "aps add", actor });
-    await writeSnapshot(stateDir, agent, snapshotOf(after));
-    process.stdout.write(`${id} ${title}\n`);
-  }).catch((err) => die(err.message));
-}
-
-// ----------------------------------------------------------------- lint
-
-async function lintOne(overlay, agent, flags) {
-  const file = registerOf(overlay, agent, flags);
+  let result;
   try {
-    const register = parseRegister(await readFile(file, "utf8"));
-    return { agent, file, findings: lintRegister(register), register };
-  } catch (err) {
-    return { agent, file, findings: [{ code: "unreadable", message: `cannot read ${file}: ${err.message}`, problem: null }] };
-  }
-}
+    result = await withLock(`${snapFile}.lock`, async () => {
+      const before = await readFile(file, "utf8");
+      const reg = parseRegister(before);
+      const want = id.toUpperCase();
+      const matches = reg.problems.filter((p) => p.id === want);
+      if (!matches.length) throw new UserError(`${id} is not in ${file}`);
+      // Which of the two is meant is a guess, and a guess here edits the wrong
+      // problem: say so and let the operator merge them.
+      if (matches.length > 1) throw new UserError(`${want} appears twice in ${file}. Give each entry its own id first.`);
+      const target = matches[0];
 
-async function cmdLint({ flags }) {
-  const overlay = resolveOverlay(flags);
-  const agents = flags.agent ? [flags.agent] : await listAgents(overlay);
-  if (!agents.length) die(`no agents under ${path.join(overlay, "agents")}`);
-  let bad = 0;
-  for (const agent of agents) {
-    const r = await lintOne(overlay, agent, flags);
-    if (!r.findings.length) {
-      process.stdout.write(`${agent}: clean\n`);
-      continue;
-    }
-    bad += r.findings.length;
-    process.stdout.write(`${agent}: ${r.findings.length} finding(s)\n`);
-    for (const f of r.findings) process.stdout.write(`  ${f.code}: ${f.message}\n`);
-  }
-  process.exit(bad ? 1 : 0);
-}
+      const wantStatus = fields.status?.toLowerCase();
+      if (wantStatus !== undefined && !STATUSES.includes(wantStatus)) {
+        throw new UserError(`unknown status "${fields.status}". Use one of: ${STATUSES.join(", ")}`);
+      }
+      const status = wantStatus ?? target.status;
+      const thread = String(fields.thread ?? target.thread ?? "").trim();
+      const parentId = (fields.parent ?? target.parent ?? "").toUpperCase();
+      const alsoSet = [];
 
-// --------------------------------------------------------------- report
+      // The one-per-thread rule is checked on the result of this call, not on
+      // whether the call happens to mention status: moving an already-active
+      // entry into an occupied thread is the same collision (R3).
+      if (["active", "blocked"].includes(status)) {
+        if (!thread) throw new UserError(`${id} has no thread, so it cannot be ${status}. Set thread=<id> in the same call.`);
+        // Overlap, not string equality: a holder may name several threads, or
+        // "any", which holds every thread's slot (R3).
+        const holders = reg.problems.filter(
+          (p) => p.id !== target.id && ["active", "blocked"].includes(p.status) && threadsOverlap(p, { thread }),
+        );
+        const parentHolder = holders.find((p) => p.id === parentId);
+        if (holders.length && !parentHolder) {
+          throw new UserError(
+            `${thread} already holds ${holders.map((p) => `${p.id} (${p.status})`).join(", ")}. Park or unblock it first, or set parent=<ID> to make ${id} its side task.`,
+          );
+        }
+        // The side-task rule: the child takes the thread, the parent waits (R9).
+        if (parentHolder) alsoSet.push([parentHolder.id, { status: "paused", updated: stampDay }]);
+      }
 
-const STALE_DAYS = 7;
-const PENDING_HOURS = 24;
-const PROPOSED_DAYS = 3;
-
-async function buildReport(overlay, flags) {
-  const stateDir = stateDirOf(overlay);
-  const agents = flags.agent ? [flags.agent] : await listAgents(overlay);
-  const out = { at: new Date().toISOString(), overlay, agents: [] };
-  for (const agent of agents) {
-    const { register, findings, file } = await lintOne(overlay, agent, flags);
-    const row = {
-      agent,
-      register: file,
-      mission: register?.mission ?? "",
-      lint: findings.map((f) => f.message),
-      parked: [],
-      stale: [],
-      pending: [],
-      proposed: [],
-      blocked: [],
-      turns: {},
-    };
-    for (const p of register?.problems ?? []) {
-      const age = daysSince(p.fields.updated);
-      const brief = { id: p.id, title: p.title, thread: p.thread, days: age, state: p.fields.state ?? "" };
-      if (p.status === "parked") row.parked.push(brief);
-      if (p.status === "blocked") row.blocked.push(brief);
-      if (p.status === "active" && age !== null && age >= STALE_DAYS) row.stale.push(brief);
-      if (p.status === "proposed" && age !== null && age >= PROPOSED_DAYS) row.proposed.push(brief);
-      if (p.pending) {
-        const pAge = daysSince(p.pending.date);
-        if (pAge === null || pAge * 24 >= PENDING_HOURS) {
-          row.pending.push({ ...brief, kind: p.pending.kind, asked: p.pending.date });
+      if (["done", "dropped"].includes(status) && parentId) {
+        const parent = reg.problems.find((p) => p.id === parentId);
+        // Closing a side task hands the thread back to its parent (R9). The
+        // operator's yes to the close covers the resume, so it is confirmed too.
+        if (parent?.status === "paused") {
+          alsoSet.push([parent.id, { status: "active", updated: stampDay, ...(has("confirmed") ? { confirmed: `${stampDay} resumed` } : {}) }]);
         }
       }
-    }
-    const counts = await readCounts(stateDir, agent);
-    const day = today();
-    const t = counts[day] ?? { turns: 0, person: 0, warn: 0, high: 0 };
-    row.turns = {
-      day,
-      ...t,
-      aboveWarnShare: t.turns ? Math.round(((t.warn + t.high) / t.turns) * 100) : 0,
-    };
-    row.largestSession = await largestSession(stateDir, agent);
-    out.agents.push(row);
+
+      const patch = { ...fields, updated: stampDay };
+      if (has("confirmed")) patch.confirmed = `${stampDay}${wantStatus ? ` ${wantStatus}` : ""}`;
+      if (has("clear-pending")) patch.pending = null;
+
+      let text = setFields(before, target.id, patch);
+      for (const [otherId, otherPatch] of alsoSet) text = setFields(text, otherId, otherPatch);
+
+      // The checks above cover the collisions this call can see coming. Linting
+      // the result catches the rest: whatever rule this patch would newly break
+      // is refused, while a register that was already failing a rule elsewhere
+      // can still be edited.
+      const broke = newErrors(lintRegister(reg), lintRegister(parseRegister(text)));
+      if (broke.length) {
+        throw new UserError(`this change would break the register:\n  ${broke.map((f) => `${f.id ? `${f.id} — ` : ""}${f.message}`).join("\n  ")}`);
+      }
+      await writeAtomic(file, text);
+
+      // Log what this call changed as "aps", and anything changed by hand since
+      // the hook last looked as "hand-edit", then advance the snapshot past both.
+      const onDisk = await readSnapshot(snapFile);
+      const beforeSnap = snapshotOf(reg);
+      const afterSnap = snapshotOf(parseRegister(text));
+      const lastPersonTurn = (await readTurns(turnsPath(overlay, agent))).lastPersonTurn ?? null;
+      const rows = [];
+      const push = (e, source) => rows.push(stamp({ ...e, flag: flagFor(e, { actor, day: stampDay, lastPersonTurn }) }, { agent, actor, source, day: stampDay }));
+      if (onDisk) for (const e of diffSnapshots(onDisk, beforeSnap)) push(e, "hand-edit");
+      for (const e of diffSnapshots(beforeSnap, afterSnap)) push(e, "aps");
+      await appendLedger(ledgerPath(overlay, agent), rows);
+      await writeSnapshot(snapFile, afterSnap);
+      return rows;
+    });
+  } catch (err) {
+    if (err instanceof UserError) die(err.message);
+    throw err;
   }
-  return out;
+  if (result === BUSY) die("another aps set or hook run holds the lock; try again");
+
+  if (has("json")) {
+    console.log(JSON.stringify({ agent, id: id.toUpperCase(), actor, logged: result }, null, 2));
+    return;
+  }
+  for (const e of result) console.log(`${e.problem} ${e.kind}${e.outcome ? ` (${e.outcome})` : ""}${e.flag ? ` — flagged: ${e.flag}` : ""}`);
+  if (!result.length) console.log("fields updated; no status or question changed");
 }
 
-/** The biggest live session the gauge has seen for this agent. */
-async function largestSession(stateDir, agent) {
+// --------------------------------------------------------------- aps lint
+
+async function lintOne(overlay, agent) {
+  const file = registerPath(overlay, agent, registerFile());
+  let text;
   try {
-    const file = path.join(stateDir, `${agent}.sessions.json`);
-    const data = JSON.parse(await readFile(file, "utf8"));
-    const rows = Object.entries(data).map(([key, v]) => ({ key, ...v }));
-    rows.sort((a, b) => (b.tokens ?? 0) - (a.tokens ?? 0));
-    return rows[0] ?? null;
-  } catch {
-    return null;
+    text = await readFile(file, "utf8");
+  } catch (err) {
+    return { agent, file, findings: [{ level: "error", code: "unreadable", id: null, message: err.message }] };
   }
+  return { agent, file, findings: lintRegister(parseRegister(text)) };
 }
 
-function renderReport(r) {
-  const L = [`Problem report — ${r.at.slice(0, 16).replace("T", " ")} UTC`];
-  if (!r.agents.length) L.push("No agents found in the overlay.");
-  for (const a of r.agents) {
-    L.push("", `## ${a.agent}`);
-    if (a.mission) L.push(`Mission: ${a.mission}`);
-    const list = (name, rows, fmt) =>
-      rows.length ? L.push(`${name}:`, ...rows.map((x) => `  - ${fmt(x)}`)) : null;
-    list("Parked", a.parked, (x) => `${x.id} ${x.title} (${x.thread}, ${x.days ?? "?"}d) ${x.state}`);
-    list("Blocked", a.blocked, (x) => `${x.id} ${x.title} (${x.thread}) ${x.state}`);
-    list(`Active, untouched ${STALE_DAYS}+ days`, a.stale, (x) => `${x.id} ${x.title} (${x.days}d)`);
-    list("Waiting on an answer", a.pending, (x) => `${x.id} ${x.title} — ${x.kind} asked ${x.asked || "date unknown"}`);
-    list(`Proposed ${PROPOSED_DAYS}+ days`, a.proposed, (x) => `${x.id} ${x.title} (${x.days}d)`);
-    if (a.largestSession) L.push(`Largest live session: ${a.largestSession.key} at ${Math.round((a.largestSession.tokens ?? 0) / 1000)}k tokens`);
-    L.push(`Turns today: ${a.turns.turns} (${a.turns.person} from the person), ${a.turns.aboveWarnShare}% above the warning level`);
-    if (a.lint.length) L.push("Register problems:", ...a.lint.map((m) => `  ! ${m}`));
-    if (!a.parked.length && !a.stale.length && !a.pending.length && !a.proposed.length && !a.blocked.length && !a.lint.length) {
-      L.push("Nothing needs attention.");
+async function cmdLint() {
+  const overlay = overlayDir();
+  let agents;
+  if (has("all")) {
+    agents = [];
+    // An agent folder with no register has not been rolled out yet; that is not
+    // a lint failure.
+    for (const agent of await agentsIn(overlay)) {
+      if (await exists(registerPath(overlay, agent, registerFile()))) agents.push(agent);
+    }
+  } else {
+    agents = [await oneAgent(overlay)];
+  }
+  const results = [];
+  for (const agent of agents) results.push(await lintOne(overlay, agent));
+  const errors = results.flatMap((r) => r.findings.filter((f) => f.level === "error"));
+  if (has("json")) {
+    console.log(JSON.stringify({ results }, null, 2));
+  } else {
+    if (!results.length) console.log(`No register under ${path.join(overlay, "agents")} yet.`);
+    for (const r of results) {
+      console.log(`${r.agent} (${r.file})`);
+      if (!r.findings.length) console.log("  clean");
+      for (const f of r.findings) console.log(`  ${f.level}: ${f.id ? `${f.id} — ` : ""}${f.message}`);
     }
   }
-  return L.join("\n");
+  process.exit(errors.length ? 1 : 0);
 }
 
-async function cmdReport({ flags }) {
-  const overlay = resolveOverlay(flags);
-  const r = await buildReport(overlay, flags);
-  process.stdout.write(flags.json ? `${JSON.stringify(r, null, 1)}\n` : `${renderReport(r)}\n`);
-}
+// ------------------------------------------------------------- aps report
 
-// --------------------------------------------------------------- doctor
-
-async function cmdDoctor({ flags }) {
-  const overlay = resolveOverlay(flags);
-  const agents = flags.agent ? [flags.agent] : await listAgents(overlay);
-  const checks = [];
-  const ok = (name, pass, note = "") => checks.push({ name, pass, note });
-
-  ok("overlay found", await stat(overlay).then(() => true, () => false), overlay);
-  ok(
-    "deny-list present",
-    await stat(path.join(overlay, "denylist.txt")).then(() => true, () => false),
-    path.join(overlay, "denylist.txt"),
+async function reportOne(overlay, agent, { staleDays, hours }) {
+  const file = registerPath(overlay, agent, registerFile());
+  let register = null;
+  let notice = null;
+  try {
+    register = parseRegister(await readFile(file, "utf8"));
+  } catch (err) {
+    notice = err?.code === "ENOENT" ? `no register at ${file}` : err.message;
+  }
+  const problems = register?.problems ?? [];
+  const parked = problems
+    .filter((p) => p.status === "parked")
+    .map((p) => ({ id: p.id, title: p.title, thread: p.thread, days: daysAgo(p.updated), state: p.fields.state ?? "" }));
+  // No date is worse than an old one, so a missing `updated:` or question date
+  // counts as overdue rather than disappearing from the report.
+  const stale = problems
+    .filter((p) => p.status === "active" && (daysAgo(p.updated) ?? Infinity) >= staleDays)
+    .map((p) => ({ id: p.id, title: p.title, thread: p.thread, days: daysAgo(p.updated) }));
+  const pending = problems
+    .filter((p) => p.pending && (daysAgo(p.pending.date) ?? Infinity) >= 1)
+    .map((p) => ({ id: p.id, title: p.title, kind: p.pending.kind, days: daysAgo(p.pending.date) }));
+  const sessions = sessionSizes(agent, { hours });
+  const turns = await readTurns(turnsPath(overlay, agent));
+  const days = Object.entries(turns)
+    .filter(([k, v]) => /^\d{4}-\d{2}-\d{2}$/.test(k) && v && typeof v === "object")
+    .sort(([a], [b]) => (a < b ? 1 : -1))
+    .slice(0, 7);
+  const totals = days.reduce(
+    (acc, [, v]) => ({ person: acc.person + (v.person ?? 0), automated: acc.automated + (v.automated ?? 0), aboveWarn: acc.aboveWarn + (v.aboveWarn ?? 0) }),
+    { person: 0, automated: 0, aboveWarn: 0 },
   );
-  const hook = path.join(overlay, "..", ".git", "hooks", "pre-commit");
-  ok("deny-list pre-commit hook installed", await stat(hook).then(() => true, () => false), hook);
-  ok("at least one agent", agents.length > 0, agents.join(", "));
+  const window = days.length ? days[days.length - 1][0] : null;
+  const ledger = await readLedger(ledgerPath(overlay, agent));
+  const flagged = ledger.filter((e) => e.flag && (!window || e.day >= window));
+  return {
+    agent,
+    notice,
+    parked,
+    stale,
+    pending,
+    largestSession: sessions[0] ?? null,
+    turns: { ...totals, days: days.length, shareAboveWarn: totals.person ? Math.round((totals.aboveWarn / totals.person) * 100) : null },
+    flagged,
+    pins: { checked: false, reason: "the pin adapter is not deployed yet" },
+  };
+}
 
-  for (const agent of agents) {
-    const r = await lintOne(overlay, agent, flags);
-    ok(`${agent}: register readable`, Boolean(r.register), r.file);
-    ok(`${agent}: register lint clean`, r.findings.length === 0, r.findings.map((f) => f.code).join(", "));
-    ok(`${agent}: mission line set`, Boolean(r.register?.mission), r.register?.mission ?? "");
-    // A dry hook call: the reminder must come back non-empty for a real thread.
-    try {
-      const { buildInjection } = await import("../lib/inject.js");
-      const thread = r.register?.problems.find((p) => p.thread)?.thread ?? "any";
-      const text = buildInjection({ register: r.register }, { thread, reading: 10_000 });
-      ok(`${agent}: reminder builds`, text.length > 40, `${text.length} chars for ${thread}`);
-    } catch (err) {
-      ok(`${agent}: reminder builds`, false, err.message);
+async function cmdReport() {
+  const overlay = overlayDir();
+  const named = flag("agents");
+  const agents = named ? named.split(",").map((s) => s.trim()).filter(Boolean) : await agentsIn(overlay);
+  const staleDays = Number(flag("stale-days") ?? 7);
+  const hours = Number(flag("hours") ?? 24);
+  const rows = [];
+  for (const agent of agents) rows.push(await reportOne(overlay, agent, { staleDays, hours }));
+
+  if (has("json")) {
+    console.log(JSON.stringify({ overlay, staleDays, agents: rows }, null, 2));
+    return;
+  }
+  if (!rows.length) console.log(`No agents in ${path.join(overlay, "agents")}.`);
+  for (const r of rows) {
+    console.log(`\n${r.agent}`);
+    if (r.notice) console.log(`  register: ${r.notice}`);
+    console.log(`  parked: ${r.parked.length ? r.parked.map((p) => `${p.id} ${p.title} (${p.days ?? "no date"}${p.days === null ? "" : "d"}${p.state ? `, ${p.state}` : ""})`).join("; ") : "none"}`);
+    if (r.stale.length) console.log(`  untouched ${staleDays}+ days: ${r.stale.map((p) => `${p.id} ${p.title} (${p.days === null ? "no date" : `${p.days}d`})`).join("; ")}`);
+    if (r.pending.length) console.log(`  waiting on an answer: ${r.pending.map((p) => `${p.id} ${p.kind} (${p.days === null ? "no date" : `${p.days}d`})`).join("; ")}`);
+    const s = r.largestSession;
+    console.log(`  largest live session: ${s ? `${s.session} ${Math.round(s.tokens / 1000)}k${s.fresh ? "" : " (last known)"}` : "none in the window"}`);
+    console.log(`  turns over ${r.turns.days} day(s): ${r.turns.person} from the operator, ${r.turns.automated} automated, ${r.turns.shareAboveWarn ?? "–"}% of theirs above the warning level`);
+    if (r.flagged.length) console.log(`  flagged: ${r.flagged.map((e) => `${e.day} ${e.problem} ${e.kind} — ${e.flag}`).join("; ")}`);
+    if (!r.pins.checked) console.log(`  pins: not checked (${r.pins.reason})`);
+  }
+}
+
+// -------------------------------------------------------------- aps install
+
+const SOURCE_CORE = process.env.APS_PACK_FROM ? path.resolve(process.env.APS_PACK_FROM) : packageRoot();
+const installedHome = stableHome();
+const CORE = existsSync(installedHome) ? installedHome : SOURCE_CORE;
+
+/** Which runtimes are on this machine, so `aps install` with no target works. */
+async function runtimesPresent() {
+  const found = [];
+  if (await exists(claudeConfigDir())) found.push("claude-code");
+  if (await exists(codexHome())) found.push("codex");
+  if (await exists(openclawConfigFile())) found.push("openclaw");
+  return found;
+}
+
+function report(result, target, dryRun) {
+  if (!result.ok) {
+    console.error(`aps: ${target}: ${result.reason}`);
+    return false;
+  }
+  if (!result.changed) {
+    console.log(`${target}: already installed, nothing to change`);
+    return true;
+  }
+  console.log(`${target}: ${dryRun ? "would write" : "wrote"}`);
+  for (const f of result.wrote) console.log(`  ${f}`);
+  if (result.note) console.log(`  ${result.note}`);
+  return true;
+}
+
+async function cmdInstall() {
+  if (has("status")) return cmdStatus();
+  const dryRun = has("dry-run");
+  const asked = positional(0).slice(1);
+  const targets = asked.length ? asked : await runtimesPresent();
+  if (!targets.length) die("found no runtime to install into; pass claude-code, codex, openclaw or agents-md");
+
+  const overlay = flag("overlay") ?? process.env.APS_OVERLAY ?? null;
+  const agent = flag("agent") ?? process.env.APS_AGENT ?? null;
+  const agents = targets.includes("openclaw") ? (flag("agents") ?? agent ?? "").split(",").map((s) => s.trim()).filter(Boolean) : [];
+
+  // Everything is checked before the first write. A run that installs Claude
+  // Code and then dies on a name it does not know leaves the machine half done.
+  const KNOWN = new Set(["claude-code", "codex", "openclaw", "agents-md"]);
+  for (const target of targets) {
+    if (!KNOWN.has(target)) die(`unknown install target "${target}": use claude-code, codex, openclaw or agents-md`);
+  }
+  if (targets.includes("openclaw") && !overlay) die("installing into openclaw needs --overlay <absolute path>");
+  if (overlay && !path.isAbsolute(overlay)) die(`the overlay path must be absolute, not "${overlay}"`);
+  for (const id of [agent, ...agents].filter(Boolean)) {
+    const bad = agentIdError(id);
+    if (bad) die(bad);
+  }
+
+  const overlayPath = overlay ? path.resolve(overlay) : null;
+  const ids = overlayPath ? [...new Set(agents.length ? agents : [agent ?? "me"])] : [];
+  const skillsDir = flag("skills-dir") ? path.resolve(flag("skills-dir")) : agentsSkillsDir();
+  const projectFlag = flag("project");
+  const project = path.resolve(projectFlag ?? process.cwd());
+  const settingsAgent = agent ?? (agents.length === 1 ? agents[0] : undefined);
+
+  const planned = settleCore(SOURCE_CORE, { dryRun: true });
+  const steps = (core, namesFrom, stepDryRun) => {
+    const out = [];
+    out.push(["command", installBin({ core, dryRun: stepDryRun })]);
+    for (const id of ids) {
+      out.push([`register ${id}`, prepareOverlay({ core: namesFrom, overlayPath, agentId: id, dryRun: stepDryRun })]);
     }
-    const lines = await readLog(logOf(overlay, agent));
-    ok(`${agent}: decision log reachable`, true, `${lines.length} line(s)`);
+    if (overlayPath) {
+      const cliTarget = targets.some((t) => ["claude-code", "codex", "agents-md"].includes(t));
+      out.push(["settings", writeSettings({
+        configHome: settingsDir(), overlayPath, agentId: settingsAgent,
+        projects: cliTarget ? [project] : null,
+        allProjects: cliTarget && has("all-projects"),
+        explicitProject: projectFlag !== null,
+        skillsDir: flag("skills-dir") ? skillsDir : null,
+        dryRun: stepDryRun,
+      })]);
+    }
+    for (const target of targets) {
+      if (target === "claude-code") out.push([target, installClaudeCode({ core, namesFrom, dryRun: stepDryRun })]);
+      else if (target === "codex") out.push([target, installCodex({ core, namesFrom, skillsDir, dryRun: stepDryRun })]);
+      else if (target === "openclaw") out.push([target, installOpenClaw({ core, overlayPath, agents, dryRun: stepDryRun })]);
+      else if (target === "agents-md") {
+        const file = path.resolve(flag("file") ?? path.join(process.cwd(), "AGENTS.md"));
+        out.push([target, installAgentsMd({
+          core, namesFrom, file, overlayPath, agentId: settingsAgent, skillsDir, dryRun: stepDryRun,
+        })]);
+      }
+    }
+    return out;
+  };
+
+  // Every config parse, path requirement and name conflict is checked before
+  // settleCore or any target writes. Dry-run reports this exact plan.
+  const preflight = steps(planned.core, planned.source, true);
+  const bad = preflight.find(([, result]) => !result.ok);
+  if (bad) die(`${bad[0]}: ${bad[1].reason}`, 1);
+  if (dryRun) {
+    if (planned.moved) report({ ok: true, changed: true, wrote: planned.wrote }, "plugin", true);
+    for (const [name, result] of preflight) report(result, name, true);
+    return;
   }
 
-  for (const c of checks) {
-    process.stdout.write(`${(c.pass ? "ok" : "FAIL").padEnd(4)} ${c.name}${c.note ? ` — ${c.note}` : ""}\n`);
+  const settled = settleCore(SOURCE_CORE);
+  let allOk = true;
+  if (settled.moved) allOk = report({ ok: true, changed: true, wrote: settled.wrote }, "plugin", false) && allOk;
+  for (const [name, result] of steps(settled.core, settled.source, false)) {
+    allOk = report(result, name, false) && allOk;
   }
-  process.exit(checks.some((c) => !c.pass) ? 1 : 0);
+  if (!overlay) console.log("\nNo overlay set yet. Run it again with --overlay <absolute path> once you have one.");
+  if (!allOk) process.exit(1);
 }
 
-// ----------------------------------------------------------------- main
-
-const [, , rawCmd, ...argv] = process.argv;
-const cmd = rawCmd && !rawCmd.startsWith("-") ? rawCmd : "";
-const parsed = parseArgv(cmd ? argv : process.argv.slice(2));
-if (!cmd || parsed.flags.help || parsed.flags.h || cmd === "help") {
-  process.stdout.write(USAGE);
-  process.exit(cmd && cmd !== "help" && !parsed.flags.help && !parsed.flags.h ? 1 : 0);
+function cmdStatus() {
+  const rows = installStatus({ core: CORE });
+  console.log(`pack: ${CORE}`);
+  console.log(`skills: ${skillNames(CORE).join(", ") || "none"}`);
+  console.log(`settings: ${path.join(settingsDir(), "config.json")}`);
+  for (const r of rows) {
+    const yes = (v) => (v === null ? "unknown" : typeof v === "string" ? v : v ? "yes" : "no");
+    console.log(`\n${r.runtime}${r.present ? "" : " (not on this machine)"}`);
+    console.log(`  skills installed: ${yes(r.skills)}`);
+    console.log(`  reminder every turn: ${yes(r.reminder)}`);
+    if (r.problem) console.log(`  problem: ${r.problem}`);
+  }
 }
-const commands = { set: cmdSet, add: cmdAdd, lint: cmdLint, report: cmdReport, doctor: cmdDoctor };
-const fn = commands[cmd];
-if (!fn) die(`unknown command '${cmd}'.\n${USAGE}`);
-await fn(parsed).catch((err) => die(err?.message ?? String(err)));
+
+// --------------------------------------------------------------- aps doctor
+
+async function cmdDoctor() {
+  const problems = [];
+  const say = (good, text) => {
+    console.log(`${good ? "ok  " : "warn"} ${text}`);
+    if (!good) problems.push(text);
+  };
+
+  const rows = installStatus({ core: CORE });
+  const live = rows.filter((r) => r.present);
+  say(live.length > 0, live.length ? `runtimes found: ${live.map((r) => r.runtime).join(", ")}` : "no supported runtime found on this machine");
+  for (const r of live) {
+    say(r.skills === true, `${r.runtime}: skills installed`);
+    if (r.reminder === "installed, not yet trusted") console.log(`info ${r.runtime}: reminder installed; trust not checked, run /hooks once`);
+    else say(r.reminder === true, `${r.runtime}: a reminder on every turn`);
+    if (r.problem) say(false, `${r.runtime}: ${r.problem}`);
+  }
+
+  const installed = runtimeConfig();
+  const overlay = flag("overlay") ?? installed.overlayPath ?? null;
+  if (!overlay) {
+    say(false, "no overlay: pass --overlay <path> or set APS_OVERLAY");
+  } else {
+    const dir = path.resolve(overlay);
+    say(await exists(dir), `overlay at ${dir}`);
+    const all = await agentsIn(dir);
+    say(all.length > 0, all.length ? `registers for: ${all.join(", ")}` : `no agents in ${path.join(dir, "agents")}`);
+    for (const a of all) {
+      const file = registerPath(dir, a, registerFile());
+      if (!(await exists(file))) {
+        say(false, `${a}: no register at ${file}`);
+        continue;
+      }
+      const register = parseRegister(await readFile(file, "utf8"));
+      const bad = lintRegister(register);
+      say(bad.length === 0, bad.length ? `${a}: ${bad.length} problem(s) in the register — run aps lint --agent ${a}` : `${a}: register is valid`);
+      say(Boolean(register.mission), `${a}: mission line set`);
+    }
+  }
+  if (problems.length) process.exit(1);
+}
+
+// ------------------------------------------------------------------ main
+
+const USAGE = `aps — one problem per thread
+
+  aps set <ID> field=value…   change a problem; stamps the date and logs it
+      --confirmed             record that the operator said yes, today
+      --clear-pending         clear an answered question
+  aps lint [--all]            check a register against the rules
+  aps report                  parked, stale, waiting, session sizes, flags
+      --agents <id>,<id>  --json  --stale-days 7  --hours 24
+  aps install [<runtime>…]    install into claude-code, codex, openclaw or
+                              agents-md; with no runtime, whichever are here
+      --overlay <abs path>    where your registers live (needed for openclaw)
+      --agent <id>            which register this machine reads
+      --project <path>        only remind inside this project (default: cwd)
+      --all-projects          remind in every directory
+      --dry-run               print the change without making it
+      --skills-dir <path>     where to link the skills (codex and its family)
+      --status                what is installed where
+  aps doctor                  is the install sound, per runtime?
+
+  --overlay <abs path> (or APS_OVERLAY), --agent <id> (or APS_AGENT),
+  --register <file>, --tz <IANA zone> (or APS_TZ)`;
+
+// The subcommand is the first argument that is not a flag or a flag's value,
+// so `aps --overlay X set P1 …` parses the same as `aps set P1 … --overlay X`.
+const command = positional(0)[0];
+try {
+  if (command === "set") await cmdSet();
+  else if (command === "lint") await cmdLint();
+  else if (command === "report") await cmdReport();
+  else if (command === "install") await cmdInstall();
+  else if (command === "doctor") await cmdDoctor();
+  else if (!command || has("help") || command === "help") console.log(USAGE);
+  else die(`unknown command "${command}"\n\n${USAGE}`);
+} catch (err) {
+  die(err?.message ?? String(err));
+}

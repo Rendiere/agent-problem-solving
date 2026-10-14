@@ -1,0 +1,9 @@
+{
+  "name": "agent-problem-solving",
+  "version": "0.3.0",
+  "description": "Keeps you and the agent on one named problem at a time, and puts that problem in front of the agent on every turn.",
+  "author": { "name": "Agent Problem Solving" },
+  "repository": "https://github.com/Rendiere/agent-problem-solving",
+  "license": "MIT",
+  "keywords": ["focus", "problem-solving", "context", "drift", "decision-log"]
+}

@@ -1,22 +1,8 @@
 {
   "name": "agent-problem-solving",
-  "version": "0.2.0",
-  "private": false,
+  "version": "0.3.0",
   "type": "module",
-  "description": "Keep a chat agent on one named problem per thread, re-injected every turn, with an append-only decision log.",
-  "scripts": {
-    "test": "node --test \"test/*.test.js\"",
-    "denylist": "node bin/denylist-check.mjs"
-  },
-  "openclaw": {
-    "extensions": [
-      "./index.js"
-    ],
-    "compat": {
-      "pluginApi": ">=2026.7.1",
-      "minGatewayVersion": "2026.7.1"
-    }
-  },
+  "description": "One plugin bundling the method skills, a per-turn hook and the aps command, to keep each chat thread on one named problem.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -25,17 +11,37 @@
   "bin": {
     "aps": "./bin/aps.mjs"
   },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "denylist": "node tools/denylist-check.mjs"
+  },
   "files": [
-    "index.js",
-    "lib",
+    ".agents",
+    ".claude-plugin",
+    "LICENSE",
+    "README.md",
+    "adapters",
     "bin",
+    "hooks",
+    "lib",
+    "openclaw.plugin.json",
+    "plugin.json",
+    "replay",
+    "scorer",
     "skills",
     "templates",
-    "scorer",
-    "replay",
-    "hooks",
-    "openclaw.plugin.json",
-    "README.md",
-    "LICENSE"
-  ]
+    "tools"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./adapters/openclaw/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.7.1",
+      "minGatewayVersion": "2026.7.1"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  }
 }

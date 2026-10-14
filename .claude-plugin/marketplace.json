@@ -1,0 +1,17 @@
+{
+  "name": "agent-problem-solving",
+  "owner": { "name": "Agent Problem Solving" },
+  "metadata": {
+    "description": "One named problem per thread, re-read every turn",
+    "version": "0.3.0"
+  },
+  "plugins": [
+    {
+      "name": "agent-problem-solving",
+      "description": "Keeps you and the agent on one named problem at a time, and puts that problem in front of the agent on every turn.",
+      "author": { "name": "Agent Problem Solving" },
+      "tags": ["focus", "problem-solving", "context", "decision-log"],
+      "source": "./"
+    }
+  ]
+}

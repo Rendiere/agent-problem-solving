@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "agent-problem-solving",
+  "version": "0.3.0",
+  "description": "Keeps you and the agent on one named problem at a time, with that problem re-read before every reply.",
+  "repository": "https://github.com/Rendiere/agent-problem-solving",
+  "license": "MIT",
+  "keywords": ["focus", "problem-solving", "context", "drift", "decision-log"],
+  "extensions": {
+    "com.openai": {
+      "hooks": "./hooks/hooks.json",
+      "interface": {
+        "displayName": "Agent Problem Solving",
+        "shortDescription": "Keep one named problem in front of the agent",
+        "longDescription": "Four problem-solving skills, an every-turn reminder and the aps command in one plugin.",
+        "developerName": "Agent Problem Solving",
+        "category": "Productivity",
+        "websiteURL": "https://github.com/Rendiere/agent-problem-solving"
+      }
+    }
+  }
+}

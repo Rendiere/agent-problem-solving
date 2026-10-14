@@ -39,9 +39,9 @@ import {
   installClaudeCode, installCodex, installOpenClaw, installAgentsMd, writeSettings, installStatus,
   claudeConfigDir, codexHome, openclawConfigFile, agentsSkillsDir, skillNames,
   prepareOverlay, settleCore, stableHome, installBin,
-  overlayChoices, pickOverlay, openclawDefaultAgent, DEFAULT_AGENT_ID,
+  overlayChoices, pickOverlay, openclawDefaultAgent, cliAgentFor,
 } from "../lib/install.js";
-import { settingsDir, runtimeConfig } from "../lib/settings.js";
+import { settingsDir, runtimeConfig, readSettings } from "../lib/settings.js";
 import { packageRoot } from "../lib/self.js";
 import { existsSync } from "node:fs";
 import os from "node:os";
@@ -449,19 +449,26 @@ async function cmdInstall() {
 
   const overlayPath = await chooseOverlay(targets);
   const cliTarget = targets.some((t) => ["claude-code", "codex", "agents-md"].includes(t));
-  // One person with one agent names nothing and gets one register under a
-  // neutral name. OpenClaw already knows its agents by id, so its register is
-  // the one for the agent it routes to by default.
-  const ids = [...new Set([
-    ...(cliTarget ? [agent ?? DEFAULT_AGENT_ID] : []),
-    ...(targets.includes("openclaw") ? (agents.length ? agents : [openclawDefaultAgent()]) : []),
-  ])];
+  // OpenClaw already knows its agents by id, so its register is the one for
+  // the agent it routes to by default.
+  const clawIds = targets.includes("openclaw") ? (agents.length ? agents : [openclawDefaultAgent()]) : [];
+  // One person with one agent names nothing: a fresh overlay gets one register
+  // under a neutral name, and an overlay that already has one keeps it.
+  let cliAgent = null;
+  if (cliTarget) {
+    const existing = (await agentsIn(overlayPath)).filter((id) => !clawIds.includes(id));
+    const recorded = readSettings().agentId;
+    const picked = cliAgentFor({ agent, recorded, existing });
+    if (picked.error) die(picked.error);
+    cliAgent = picked.id;
+  }
+  const ids = [...new Set([...(cliAgent ? [cliAgent] : []), ...clawIds])];
   const skillsDir = flag("skills-dir") ? path.resolve(flag("skills-dir")) : agentsSkillsDir();
   const projectFlag = flag("project");
   const project = path.resolve(projectFlag ?? process.cwd());
   // Recorded only when the command line would otherwise have to guess between
   // registers; a lone register is found without a name.
-  const settingsAgent = agent ?? (cliTarget ? (ids.length > 1 ? DEFAULT_AGENT_ID : undefined) : (agents.length === 1 ? agents[0] : undefined));
+  const settingsAgent = agent ?? (cliTarget ? (ids.length > 1 ? cliAgent : undefined) : (agents.length === 1 ? agents[0] : undefined));
 
   const planned = settleCore(SOURCE_CORE, { dryRun: true });
   const steps = (core, namesFrom, stepDryRun) => {
@@ -485,7 +492,7 @@ async function cmdInstall() {
       else if (target === "agents-md") {
         const file = path.resolve(flag("file") ?? path.join(process.cwd(), "AGENTS.md"));
         out.push([target, installAgentsMd({
-          core, namesFrom, file, overlayPath, agentId: agent ?? DEFAULT_AGENT_ID, skillsDir, dryRun: stepDryRun,
+          core, namesFrom, file, overlayPath, agentId: cliAgent, skillsDir, dryRun: stepDryRun,
         })]);
       }
     }
@@ -514,9 +521,9 @@ async function cmdInstall() {
 
 /**
  * Where the registry lives. --overlay wins; otherwise the person is asked, and
- * offered places scoped to where this agent already keeps its things. With
- * nobody at the keyboard the places are listed and nothing is written, unless
- * --yes accepts the first.
+ * offered the place an earlier install recorded, then places scoped to where
+ * this agent already keeps its things. With nobody at the keyboard the places
+ * are listed and nothing is written, unless --yes accepts the first.
  */
 async function chooseOverlay(targets) {
   const cwd = process.cwd();

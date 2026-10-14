@@ -692,7 +692,7 @@ test("every command works off the settings install wrote, with no flags", () => 
 
 // ------------------------------------------- where the registry is stored
 
-import { overlayChoices, pickOverlay, DEFAULT_AGENT_ID } from "../lib/install.js";
+import { overlayChoices, pickOverlay, cliAgentFor, DEFAULT_AGENT_ID } from "../lib/install.js";
 
 test("inside a repository the first place offered is that repository", () => {
   const { env } = machine();
@@ -733,6 +733,7 @@ test("an answer picks a numbered place, or names one of its own", () => {
   assert.equal(pickOverlay("3", choices, { cwd: "/w", home: "/h" }), null);
   assert.equal(pickOverlay("~/notes/problems", choices, { cwd: "/w", home: "/h" }), "/h/notes/problems");
   assert.equal(pickOverlay("docs/problems", choices, { cwd: "/w", home: "/h" }), "/w/docs/problems");
+  assert.equal(pickOverlay("2", [], { cwd: "/w", home: "/h" }), "/w/2");
 });
 
 test("with no --overlay and nobody to ask, install lists the places and writes nothing", () => {
@@ -793,4 +794,79 @@ test("OpenClaw with no --agents gets a register for the agent it routes to by de
   const r = aps(["install", "openclaw", "--overlay", ov], env);
   assert.equal(r.code, 0, `${r.out}\n${r.err}`);
   assert.deepEqual(readdirSync(path.join(ov, "agents")), ["lead"]);
+});
+
+test("a place an earlier install recorded is offered first, as where the problems are now", () => {
+  const { env } = machine();
+  const cwd = mkdtempSync(path.join(tmpdir(), "aps-norepo-"));
+  const stored = path.join(env.HOME, "store");
+  mkdirSync(env.APS_CONFIG_HOME, { recursive: true });
+  writeFileSync(path.join(env.APS_CONFIG_HOME, "config.json"), JSON.stringify({ overlayPath: stored }));
+  const choices = overlayChoices({ targets: ["codex"], cwd, env });
+  assert.deepEqual(choices.map((c) => c.path), [stored, path.join(env.CODEX_HOME, "problems")]);
+  assert.match(choices[0].label, /stored now/);
+});
+
+test("installing a second runtime with --yes keeps the registry the first install chose", () => {
+  const { env } = machine();
+  mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+  mkdirSync(env.CODEX_HOME, { recursive: true });
+  const repo = path.join(env.HOME, "site");
+  mkdirSync(path.join(repo, ".git"), { recursive: true });
+  const elsewhere = mkdtempSync(path.join(tmpdir(), "aps-norepo-"));
+  const run = (args, cwd) => spawnSync(process.execPath, [APS, ...args], {
+    cwd, encoding: "utf8", env: { ...process.env, APS_OVERLAY: "", APS_AGENT: "", ...env },
+  });
+  const first = run(["install", "claude-code", "--yes"], repo);
+  assert.equal(first.status, 0, `${first.stdout}\n${first.stderr}`);
+  const second = run(["install", "codex", "--yes"], elsewhere);
+  assert.equal(second.status, 0, `${second.stdout}\n${second.stderr}`);
+  assert.equal(json(path.join(env.APS_CONFIG_HOME, "config.json")).overlayPath, path.join(repo, ".problems"));
+  assert.equal(existsSync(path.join(env.CODEX_HOME, "problems")), false);
+});
+
+test("with no named agent, an empty overlay gets the default, one register is reused, and several need a name", () => {
+  assert.deepEqual(cliAgentFor({ existing: [] }), { id: DEFAULT_AGENT_ID });
+  assert.deepEqual(cliAgentFor({ existing: ["me"] }), { id: "me" });
+  assert.deepEqual(cliAgentFor({ agent: "x", existing: ["me"] }), { id: "x" });
+  assert.deepEqual(cliAgentFor({ recorded: "b", existing: ["a", "b"] }), { id: "b" });
+  assert.match(cliAgentFor({ existing: ["a", "b"] }).error, /--agent/);
+  assert.match(cliAgentFor({ recorded: "c", existing: ["a", "b"] }).error, /--agent/);
+});
+
+test("re-installing over an overlay that already holds one register keeps it and adds no default", () => {
+  const { env } = machine();
+  mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+  const ov = path.join(env.HOME, "store");
+  mkdirSync(path.join(ov, "agents", "me"), { recursive: true });
+  writeFileSync(path.join(ov, "agents", "me", "PROBLEMS.md"), "Mission: x\n");
+  const r = aps(["install", "claude-code", "--overlay", ov, "--all-projects"], env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.deepEqual(readdirSync(path.join(ov, "agents")), ["me"]);
+  assert.equal(read(path.join(ov, "agents", "me", "PROBLEMS.md")), "Mission: x\n");
+});
+
+test("re-installing over an overlay with several registers and no --agent is refused before any write", () => {
+  const { env } = machine();
+  mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+  const ov = path.join(env.HOME, "store");
+  for (const id of ["a", "b"]) mkdirSync(path.join(ov, "agents", id), { recursive: true });
+  const r = aps(["install", "claude-code", "--overlay", ov], env);
+  assert.notEqual(r.code, 0);
+  assert.match(r.err, /--agent/);
+  assert.deepEqual(readdirSync(path.join(ov, "agents")), ["a", "b"]);
+  assert.equal(existsSync(path.join(env.APS_CONFIG_HOME, "config.json")), false);
+});
+
+test("several registers are fine when the settings already name the one this install is for", () => {
+  const { env } = machine();
+  mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+  const ov = path.join(env.HOME, "store");
+  for (const id of ["a", "b"]) mkdirSync(path.join(ov, "agents", id), { recursive: true });
+  mkdirSync(env.APS_CONFIG_HOME, { recursive: true });
+  writeFileSync(path.join(env.APS_CONFIG_HOME, "config.json"), JSON.stringify({ overlayPath: ov, agentId: "b" }));
+  const r = aps(["install", "claude-code", "--overlay", ov, "--all-projects"], env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.deepEqual(readdirSync(path.join(ov, "agents")), ["a", "b"]);
+  assert.equal(json(path.join(env.APS_CONFIG_HOME, "config.json")).agentId, "b");
 });

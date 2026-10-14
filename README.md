@@ -1,17 +1,13 @@
 # agent-problem-solving
 
-Agent Problem Solving is a plugin that keeps one named problem in front of
-your agent. It bundles four skills, an every-turn reminder, and the `aps`
-command.
+Agent Problem Solving is a plugin that helps you solve problems with your agent.
 
-A chat agent that runs for days answers your latest message well and loses the
-problem behind it. You asked for ten artists emailed, and four hours later you
-are both deep in a privacy page nobody needed yet. The agent did not decide to
-abandon the first thing; it stopped noticing there was a first thing.
+Use it to:
 
-The plugin keeps one named problem per thread in a file. The runtime reads that
-file and puts its state in front of the agent before every reply, so the agent
-sees the current problem whether it looks for it or not.
+1. Clearly define a problem and what done means
+2. Identify & understand available information + what (if any) is required but missing
+3. Refine the problem as new information arrives
+4. **NB!!** Keep the conversation on track to solve the problem.  
 
 ## Install
 
@@ -20,7 +16,7 @@ installer creates `~/problems`, adds the four skills, installs `aps`, and wires
 the reminder into that runtime. It stays out of every other project unless you
 pass `--all-projects`.
 
-**Claude Code**
+### Claude Code
 
 ```bash
 npx github:Rendiere/agent-problem-solving install claude-code --overlay ~/problems --agent me

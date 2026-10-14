@@ -13,18 +13,19 @@ It works with Claude Code, Codex and OpenClaw.
 
 ## What it looks like
 
-You chat with your agent as usual. When a request needs more than a direct
-answer, the agent writes the problem down before it starts, without you asking
-it to:
+You chat with your agent as usual. When you bring it a problem, the agent
+writes the problem down before it starts, without you asking it to. When the
+steps are obvious, as with adding a CSV export, it just does the work and
+writes nothing down.
 
-> **You:** Can you add a CSV export to the reports page?
+> **You:** Sign-ups dropped about 30% last month. Any idea why?
 >
-> **Agent:** This will take more than one reply, so I'd like to write it down first.
+> **Agent:** Not yet, and finding out will take more than one reply, so I'd like to write it down first.
 >
-> P1. CSV export on the reports page
-> - problem: people copy report tables out by hand
-> - done when: a Download CSV button on the reports page returns the same rows the table shows
-> - rules out: other export formats until this one works
+> P1. Find out why sign-ups fell
+> - problem: sign-ups fell about 30% last month and nobody knows why
+> - done when: we can name the step where the missing sign-ups drop out, with numbers from both months
+> - rules out: changes to the sign-up flow until we know the cause
 >
 > 1. Approve 2. Reword 3. Not now
 >
@@ -34,8 +35,9 @@ Half an hour later you ask for something else:
 
 > **You:** While you're in there, can you restyle the sidebar?
 >
-> **Agent:** 🧭 I noticed we're veering off P1 CSV export: the sidebar doesn't get
-> the export working. 1. Back to it 2. Reframe 3. Park it and switch
+> **Agent:** 🧭 I noticed we're veering off P1 Find out why sign-ups fell: the
+> sidebar won't show where people drop out. 1. Back to it 2. Reframe 3. Park it
+> and switch
 
 When the check passes, the agent shows you the evidence and asks before it
 calls the problem done. Tomorrow's session opens on the same problem, because
@@ -43,10 +45,12 @@ the problem is stored in a file that every new session reads.
 
 ## How a problem moves
 
-![How a problem moves, from your request to done, parked or dropped](docs/problem-loop.svg)
+![How a problem moves, from the problem you bring to done, parked or dropped](docs/problem-loop.svg)
 
-1. You ask for something that needs more than a direct answer. A quick fact or
-   a one-line fix just gets answered.
+1. You bring a problem: something is off and the way to fix it isn't obvious
+   yet. A quick fact or a task with clear steps just gets answered or done. If
+   you keep telling the agent a task isn't quite what you want, it suggests
+   writing it down as a problem.
 2. The agent drafts the problem: what is wrong, and a check anyone could run to
    prove it fixed. It waits for you.
 3. You approve it, and it becomes the active problem. Each project or chat

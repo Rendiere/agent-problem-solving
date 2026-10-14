@@ -155,6 +155,10 @@ test("no entries shows no problem and the entry instruction", () => {
   const text = buildInjection(parseRegister("Mission: m\n"), { thread: "topic:5" });
   assert.match(text, /Thread topic:5: no problem\./);
   assert.match(text, /frame-problem skill/);
+  assert.match(text, /no obvious route/);
+  assert.match(text, /task with clear steps.*no entry/);
+  assert.match(text, /keep saying a task's result isn't what they want/);
+  assert.doesNotMatch(text, /more than a direct answer|second attempt|fails twice/);
   assert.doesNotMatch(text, /Check before replying/);
 });
 
@@ -297,6 +301,18 @@ test("no skill tells the agent to act before the operator answers", () => {
   assert.match(focus, /aps report/);
   const frame = skills.find(([n]) => n === "frame-problem")[1];
   assert.match(frame, /pending: enter <date>/);
+  // A problem is a gap with no obvious route; a task with steps you could write
+  // down now gets done with no entry. No attempt counter turns one into the other.
+  const frameTrigger = frame.match(/^description: (.*)$/m)[1];
+  assert.match(frameTrigger, /no obvious route/);
+  assert.match(frameTrigger, /isn't quite what they want/);
+  assert.match(frameTrigger, /Not for a task/);
+  for (const [name, text] of skills) {
+    assert.doesNotMatch(text, /second attempt|fails twice|no active problem covers/i, `${name} still carries the old trigger`);
+  }
+  assert.match(frameTrigger, /side task/);
+  assert.match(focus, /gets no entry of its own, unless it is a side task/);
+  assert.doesNotMatch(readFileSync(new URL("../README.md", import.meta.url), "utf8"), /second attempt|fails twice|more than a direct answer/i);
   assert.match(frame, /C4/);
   assert.match(skills.find(([n]) => n === "reframe")[1], /C4/);
   assert.match(skills.find(([n]) => n === "close-problem")[1], /pending: close <date>/);

@@ -19,7 +19,7 @@ steps are obvious, as with adding a CSV export, it just does the work and
 writes nothing down.
 
 > **You:** Sign-ups dropped about 30% last month. Any idea why?
->
+
 > **Agent:** Not yet, and finding out will take more than one reply, so I'd like to write it down first.
 >
 > P1. Find out why sign-ups fell
@@ -27,17 +27,25 @@ writes nothing down.
 > - done when: we can name the step where the missing sign-ups drop out, with numbers from both months
 > - rules out: changes to the sign-up flow until we know the cause
 >
-> 1. Approve 2. Reword 3. Not now
->
+> 1. Approve
+> 2. Reword
+> 3. Not now
+
 > **You:** 1
 
-Half an hour later you ask for something else:
+Half an hour later you ask for something unrelated:
 
 > **You:** While you're in there, can you restyle the sidebar?
+
+> **Agent:** Restyling the sidebar won't tell us where people drop out, so it's a
+> new job. Park P1 Find out why sign-ups fell (both months' numbers pulled, drop-off
+> step not found yet) and switch?
 >
-> **Agent:** 🧭 I noticed we're veering off P1 Find out why sign-ups fell: the
-> sidebar won't show where people drop out. 1. Back to it 2. Reframe 3. Park it
-> and switch
+> 1. Park and switch
+> 2. Stay on P1
+
+If the work drifts off P1 and you haven't asked for anything new, the agent asks
+the same way and adds an option to reword P1.
 
 When the check passes, the agent shows you the evidence and asks before it
 calls the problem done. Tomorrow's session opens on the same problem, because
@@ -77,12 +85,7 @@ npx github:Rendiere/agent-problem-solving install openclaw
 
 Each command installs four skills, a hook that shows the agent the active
 problem before every reply, and the `aps` command the agent uses to change a
-problem. The installer asks where to store your problems and suggests places near the
-agent: the repository you are in, or the agent's own folder (`~/.claude`,
-`~/.codex`, or the OpenClaw workspace). Pass `--overlay <path>` to choose
-without the question, or `--yes` to take the first suggestion. A folder inside
-your repository can be committed or added to `.gitignore`, whichever you
-prefer. Add `--dry-run` to see which files would change; the installer backs up
+problem. Add `--dry-run` to see which files would change; the installer backs up
 any file before editing it.
 
 After installing:
@@ -98,6 +101,32 @@ For any other agent, `npx skills add Rendiere/agent-problem-solving` installs
 the skills on their own. Without the hook, the agent has to remember to read
 its problems. [docs/reference.md](docs/reference.md) covers the `aps` command
 and the file format.
+
+## Where your problems are stored
+
+The installer asks where to keep your problems and offers a numbered list. Which
+places it offers depends on the agent you install for:
+
+- `.problems` in the repository you ran it from, when that is a git repository
+- `~/.claude/problems` for Claude Code
+- `~/.codex/problems` for Codex
+- `problems` in the OpenClaw workspace for OpenClaw
+
+Press Enter to take the first place, type a number to pick another, or type
+any path. `--overlay <path>` sets the place without asking, and `--yes` takes
+the first one. A `.problems` folder inside your repository can be committed or
+added to `.gitignore`, whichever you prefer.
+
+The folder holds one problem file per agent, at `agents/<name>/PROBLEMS.md`,
+and a log of every change beside it in `decisions.jsonl`. The name is `default`
+unless you pass `--agent`. The installer records the folder in
+`~/.config/aps/config.json`, and for OpenClaw in OpenClaw's own config too. The
+hook and the `aps` command look it up there.
+
+To move your problems later, move the folder, then run the install command again
+with `--overlay <new path>`. A re-run offers the folder already in use as the
+first choice, so taking the default keeps everything where it is. If the new
+folder has no problem file yet, the installer starts an empty one there.
 
 ## Licence
 

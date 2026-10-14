@@ -1,11 +1,15 @@
 ---
 name: frame-problem
-description: Use before starting work that no active problem covers, when the operator asks for a fix with no done-when in sight, or when a second attempt at the same thing fails. Drafts one register entry and asks the operator to confirm it in one message.
+description: Use when the operator brings a problem, a gap between where things are and where they want them with no obvious route to close it, or when their feedback on a task keeps saying it isn't quite what they want. Not for a task whose steps you could write down now, except a side task's child entry. Drafts one register entry and asks the operator to confirm it in one message.
 ---
 
 # Frame a problem
 
 Write the problem down before solving it. The order is what is wrong, the simplest approach that could meet it, then the goal.
+
+**Problem or task.** A problem is a gap between where things are and where the operator wants them, and the route to closing it isn't obvious: it needs options, probably more than one sitting, and a clear done-when. "Sign-ups dropped 30% last month and we don't know why" is a problem. A task is work whose steps you could write down now, like "add a CSV export to the homepage": do it and register nothing.
+
+**When a task turns out to be a problem.** If you are carrying out a task and the operator keeps telling you the result isn't quite what they want, the goal isn't understood yet. Say so and propose framing it as a problem.
 
 1. **Read the register and the mission line.** If an active problem already covers this, use it and stop here.
 2. **Gather what you have.** Note what you already know and what is missing. For each missing piece, name how you will get it: a query, a file, a question.
@@ -21,6 +25,6 @@ Write the problem down before solving it. The order is what is wrong, the simple
 
 A thread holds one active problem. If a second one is needed here, ask which to park. Only the operator moves a problem to active, done or dropped.
 
-A fact, a reminder or chat needs no entry: answer it. Anything that takes more than a direct answer gets an entry first.
+A fact, a reminder, chat or a task needs no entry: answer it or do it.
 
 **If the problem or the approach needs a picture**, use C4 and stop at level 1 (system context) and level 2 (containers). Ten to fifteen boxes per picture; split it rather than crowd it. Every arrow points one way and carries a label: the protocol where that matters, otherwise the action.

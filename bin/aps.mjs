@@ -39,10 +39,13 @@ import {
   installClaudeCode, installCodex, installOpenClaw, installAgentsMd, writeSettings, installStatus,
   claudeConfigDir, codexHome, openclawConfigFile, agentsSkillsDir, skillNames,
   prepareOverlay, settleCore, stableHome, installBin,
+  overlayChoices, pickOverlay, openclawDefaultAgent, cliAgentFor,
 } from "../lib/install.js";
-import { settingsDir, runtimeConfig } from "../lib/settings.js";
+import { settingsDir, runtimeConfig, readSettings } from "../lib/settings.js";
 import { packageRoot } from "../lib/self.js";
 import { existsSync } from "node:fs";
+import os from "node:os";
+import { createInterface } from "node:readline/promises";
 
 const argv = process.argv.slice(2);
 
@@ -67,7 +70,7 @@ const has = (name) => argv.includes(`--${name}`);
 
 // Flags that stand alone. Anything else spelled --x takes the next token as its
 // value, so a positional argument is never confused with one.
-const SWITCHES = new Set(["dry-run", "status", "json", "all", "help", "confirmed", "clear-pending", "all-projects"]);
+const SWITCHES = new Set(["dry-run", "status", "json", "all", "help", "confirmed", "clear-pending", "all-projects", "yes"]);
 
 /** The arguments that are not flags and not a flag's value. */
 function positional(from = 0) {
@@ -430,7 +433,6 @@ async function cmdInstall() {
   const targets = asked.length ? asked : await runtimesPresent();
   if (!targets.length) die("found no runtime to install into; pass claude-code, codex, openclaw or agents-md");
 
-  const overlay = flag("overlay") ?? process.env.APS_OVERLAY ?? null;
   const agent = flag("agent") ?? process.env.APS_AGENT ?? null;
   const agents = targets.includes("openclaw") ? (flag("agents") ?? agent ?? "").split(",").map((s) => s.trim()).filter(Boolean) : [];
 
@@ -440,19 +442,33 @@ async function cmdInstall() {
   for (const target of targets) {
     if (!KNOWN.has(target)) die(`unknown install target "${target}": use claude-code, codex, openclaw or agents-md`);
   }
-  if (targets.includes("openclaw") && !overlay) die("installing into openclaw needs --overlay <absolute path>");
-  if (overlay && !path.isAbsolute(overlay)) die(`the overlay path must be absolute, not "${overlay}"`);
   for (const id of [agent, ...agents].filter(Boolean)) {
     const bad = agentIdError(id);
     if (bad) die(bad);
   }
 
-  const overlayPath = overlay ? path.resolve(overlay) : null;
-  const ids = overlayPath ? [...new Set(agents.length ? agents : [agent ?? "me"])] : [];
+  const overlayPath = await chooseOverlay(targets);
+  const cliTarget = targets.some((t) => ["claude-code", "codex", "agents-md"].includes(t));
+  // OpenClaw already knows its agents by id, so its register is the one for
+  // the agent it routes to by default.
+  const clawIds = targets.includes("openclaw") ? (agents.length ? agents : [openclawDefaultAgent()]) : [];
+  // One person with one agent names nothing: a fresh overlay gets one register
+  // under a neutral name, and an overlay that already has one keeps it.
+  let cliAgent = null;
+  if (cliTarget) {
+    const existing = (await agentsIn(overlayPath)).filter((id) => !clawIds.includes(id));
+    const recorded = readSettings().agentId;
+    const picked = cliAgentFor({ agent, recorded, existing });
+    if (picked.error) die(picked.error);
+    cliAgent = picked.id;
+  }
+  const ids = [...new Set([...(cliAgent ? [cliAgent] : []), ...clawIds])];
   const skillsDir = flag("skills-dir") ? path.resolve(flag("skills-dir")) : agentsSkillsDir();
   const projectFlag = flag("project");
   const project = path.resolve(projectFlag ?? process.cwd());
-  const settingsAgent = agent ?? (agents.length === 1 ? agents[0] : undefined);
+  // Recorded only when the command line would otherwise have to guess between
+  // registers; a lone register is found without a name.
+  const settingsAgent = agent ?? (cliTarget ? (ids.length > 1 ? cliAgent : undefined) : (agents.length === 1 ? agents[0] : undefined));
 
   const planned = settleCore(SOURCE_CORE, { dryRun: true });
   const steps = (core, namesFrom, stepDryRun) => {
@@ -461,17 +477,14 @@ async function cmdInstall() {
     for (const id of ids) {
       out.push([`register ${id}`, prepareOverlay({ core: namesFrom, overlayPath, agentId: id, dryRun: stepDryRun })]);
     }
-    if (overlayPath) {
-      const cliTarget = targets.some((t) => ["claude-code", "codex", "agents-md"].includes(t));
-      out.push(["settings", writeSettings({
-        configHome: settingsDir(), overlayPath, agentId: settingsAgent,
-        projects: cliTarget ? [project] : null,
-        allProjects: cliTarget && has("all-projects"),
-        explicitProject: projectFlag !== null,
-        skillsDir: flag("skills-dir") ? skillsDir : null,
-        dryRun: stepDryRun,
-      })]);
-    }
+    out.push(["settings", writeSettings({
+      configHome: settingsDir(), overlayPath, agentId: settingsAgent,
+      projects: cliTarget ? [project] : null,
+      allProjects: cliTarget && has("all-projects"),
+      explicitProject: projectFlag !== null,
+      skillsDir: flag("skills-dir") ? skillsDir : null,
+      dryRun: stepDryRun,
+    })]);
     for (const target of targets) {
       if (target === "claude-code") out.push([target, installClaudeCode({ core, namesFrom, dryRun: stepDryRun })]);
       else if (target === "codex") out.push([target, installCodex({ core, namesFrom, skillsDir, dryRun: stepDryRun })]);
@@ -479,7 +492,7 @@ async function cmdInstall() {
       else if (target === "agents-md") {
         const file = path.resolve(flag("file") ?? path.join(process.cwd(), "AGENTS.md"));
         out.push([target, installAgentsMd({
-          core, namesFrom, file, overlayPath, agentId: settingsAgent, skillsDir, dryRun: stepDryRun,
+          core, namesFrom, file, overlayPath, agentId: cliAgent, skillsDir, dryRun: stepDryRun,
         })]);
       }
     }
@@ -503,8 +516,37 @@ async function cmdInstall() {
   for (const [name, result] of steps(settled.core, settled.source, false)) {
     allOk = report(result, name, false) && allOk;
   }
-  if (!overlay) console.log("\nNo overlay set yet. Run it again with --overlay <absolute path> once you have one.");
   if (!allOk) process.exit(1);
+}
+
+/**
+ * Where the registry lives. --overlay wins; otherwise the person is asked, and
+ * offered the place an earlier install recorded, then places scoped to where
+ * this agent already keeps its things. With nobody at the keyboard the places
+ * are listed and nothing is written, unless --yes accepts the first.
+ */
+async function chooseOverlay(targets) {
+  const cwd = process.cwd();
+  const home = process.env.HOME ? path.resolve(process.env.HOME) : os.homedir();
+  const given = flag("overlay") ?? (process.env.APS_OVERLAY || null);
+  if (given) return pickOverlay(given, [], { cwd, home });
+  const choices = overlayChoices({ targets, cwd });
+  if (has("yes")) return choices[0].path;
+  const listed = choices.map((c, i) => `  ${i + 1}. ${c.label}: ${c.path}`).join("\n");
+  if (!process.stdin.isTTY) {
+    die(`install needs --overlay <path> to know where your problems are stored, or --yes to take the first of:\n${listed}`);
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    for (;;) {
+      const answer = await rl.question(`Where should your problems be stored?\n${listed}\nPick a number or type a path [1]: `);
+      const picked = pickOverlay(answer, choices, { cwd, home });
+      if (picked) return picked;
+      console.error(`Not one of 1-${choices.length}.`);
+    }
+  } finally {
+    rl.close();
+  }
 }
 
 function cmdStatus() {
@@ -576,8 +618,9 @@ const USAGE = `aps — one problem per thread
       --agents <id>,<id>  --json  --stale-days 7  --hours 24
   aps install [<runtime>…]    install into claude-code, codex, openclaw or
                               agents-md; with no runtime, whichever are here
-      --overlay <abs path>    where your registers live (needed for openclaw)
-      --agent <id>            which register this machine reads
+      --overlay <path>        where your problems are stored; asked if left out
+      --yes                   take the first suggested place without asking
+      --agent <id>            name the agent, if you run more than one
       --project <path>        only remind inside this project (default: cwd)
       --all-projects          remind in every directory
       --dry-run               print the change without making it

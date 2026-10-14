@@ -187,7 +187,8 @@ test("a native plugin install with no overlay says how to finish setup", () => {
   const r = run(claudeEvent(project()));
   assert.equal(r.code, 0);
   assert.match(context(r.stdout), /installed but not set up/);
-  assert.match(context(r.stdout), /install claude-code --overlay/);
+  assert.match(context(r.stdout), /install claude-code/);
+  assert.doesNotMatch(context(r.stdout), /~\/problems|--agent me/);
 });
 
 test("a malformed event exits clean and silent", () => {

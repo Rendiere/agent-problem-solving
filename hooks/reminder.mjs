@@ -69,7 +69,7 @@ async function main() {
   // directory. Say exactly what remains instead of staying silently inert.
   if (!overlay) {
     const runtime = event.model ? "codex" : "claude-code";
-    return emit(`Agent Problem Solving is installed but not set up. Run: npx github:Rendiere/agent-problem-solving install ${runtime} --overlay ~/problems --agent me`);
+    return emit(`Agent Problem Solving is installed but not set up. Run: npx github:Rendiere/agent-problem-solving install ${runtime}`);
   }
   // A hook in the person's own settings fires in every directory they open the
   // agent in. Only the ones they named get a reminder.

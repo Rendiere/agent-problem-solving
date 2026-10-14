@@ -545,9 +545,9 @@ test("install creates the overlay and a register from the template when they are
   const { env } = machine();
   mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
   const ov = path.join(env.HOME, "problems");
-  const r = aps(["install", "claude-code", "--overlay", ov, "--agent", "me", "--all-projects"], env);
+  const r = aps(["install", "claude-code", "--overlay", ov, "--agent", "a", "--all-projects"], env);
   assert.equal(r.code, 0, `${r.out}\n${r.err}`);
-  const register = path.join(ov, "agents", "me", "PROBLEMS.md");
+  const register = path.join(ov, "agents", "a", "PROBLEMS.md");
   assert.ok(existsSync(register), r.out);
   assert.match(read(register), /Mission:/);
   // The installer cannot invent this agent's mission. Doctor names the one
@@ -562,7 +562,7 @@ test("install records the directory it ran in, so the hook stays out of every ot
   mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
   const proj = path.join(env.HOME, "website");
   mkdirSync(proj, { recursive: true });
-  const r = spawnSync(process.execPath, [APS, "install", "claude-code", "--overlay", path.join(env.HOME, "problems"), "--agent", "me"], {
+  const r = spawnSync(process.execPath, [APS, "install", "claude-code", "--overlay", path.join(env.HOME, "problems"), "--agent", "a"], {
     cwd: proj,
     encoding: "utf8",
     env: { ...process.env, APS_OVERLAY: "", APS_AGENT: "", ...env },
@@ -574,7 +574,7 @@ test("install records the directory it ran in, so the hook stays out of every ot
 test("--all-projects is the explicit way to want it everywhere", () => {
   const { env } = machine();
   mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
-  aps(["install", "claude-code", "--overlay", path.join(env.HOME, "problems"), "--agent", "me", "--all-projects"], env);
+  aps(["install", "claude-code", "--overlay", path.join(env.HOME, "problems"), "--agent", "a", "--all-projects"], env);
   assert.deepEqual(json(path.join(env.APS_CONFIG_HOME, "config.json")).projects, []);
 });
 
@@ -583,8 +583,8 @@ test("a later install keeps an all-projects choice unless --project is explicit"
   mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
   mkdirSync(env.CODEX_HOME, { recursive: true });
   const ov = path.join(env.HOME, "problems");
-  aps(["install", "claude-code", "--overlay", ov, "--agent", "me", "--all-projects"], env);
-  aps(["install", "codex", "--overlay", ov, "--agent", "me", "--skills-dir", path.join(env.HOME, "codex-skills")], env);
+  aps(["install", "claude-code", "--overlay", ov, "--agent", "a", "--all-projects"], env);
+  aps(["install", "codex", "--overlay", ov, "--agent", "a", "--skills-dir", path.join(env.HOME, "codex-skills")], env);
   assert.deepEqual(json(path.join(env.APS_CONFIG_HOME, "config.json")).projects, []);
 });
 
@@ -596,8 +596,8 @@ test("a second project is added beside the first, not over it", () => {
   const b = path.join(env.HOME, "two");
   mkdirSync(a, { recursive: true });
   mkdirSync(b, { recursive: true });
-  aps(["install", "claude-code", "--overlay", ov, "--agent", "me", "--project", a], env);
-  aps(["install", "claude-code", "--overlay", ov, "--agent", "me", "--project", b], env);
+  aps(["install", "claude-code", "--overlay", ov, "--agent", "a", "--project", a], env);
+  aps(["install", "claude-code", "--overlay", ov, "--agent", "a", "--project", b], env);
   assert.deepEqual(json(path.join(env.APS_CONFIG_HOME, "config.json")).projects.sort(), [a, b].sort());
 });
 
@@ -610,7 +610,7 @@ test("Codex gets nothing in its hooks file beyond the hooks themselves", () => {
 test("Codex status does not promise a reminder the trust prompt has not allowed yet", () => {
   const { env } = machine();
   mkdirSync(env.CODEX_HOME, { recursive: true });
-  aps(["install", "codex", "--overlay", path.join(env.HOME, "problems"), "--agent", "me", "--all-projects", "--skills-dir", path.join(env.HOME, "s")], env);
+  aps(["install", "codex", "--overlay", path.join(env.HOME, "problems"), "--agent", "a", "--all-projects", "--skills-dir", path.join(env.HOME, "s")], env);
   const out = aps(["install", "--status"], env).out;
   assert.match(out, /codex[\s\S]*reminder every turn: installed, not yet trusted/);
 });
@@ -619,8 +619,8 @@ test("doctor treats Codex trust as information, not a permanent failure", () => 
   const { env } = machine();
   mkdirSync(env.CODEX_HOME, { recursive: true });
   const ov = path.join(env.HOME, "problems");
-  aps(["install", "codex", "--overlay", ov, "--agent", "me", "--skills-dir", path.join(env.HOME, "s")], env);
-  const file = path.join(ov, "agents", "me", "PROBLEMS.md");
+  aps(["install", "codex", "--overlay", ov, "--agent", "a", "--skills-dir", path.join(env.HOME, "s")], env);
+  const file = path.join(ov, "agents", "a", "PROBLEMS.md");
   writeFileSync(file, read(file).replace("Mission:", "Mission: finish the project"));
   const r = aps(["doctor"], env);
   assert.equal(r.code, 0, `${r.out}\n${r.err}`);
@@ -644,12 +644,12 @@ test("agents-md command installs layer 1 and is idempotent", () => {
   mkdirSync(project, { recursive: true });
   const file = path.join(project, "AGENTS.md");
   const skills = path.join(env.HOME, "fallback-skills");
-  const args = ["install", "agents-md", "--overlay", path.join(env.HOME, "problems"), "--agent", "me", "--file", file, "--skills-dir", skills];
+  const args = ["install", "agents-md", "--overlay", path.join(env.HOME, "problems"), "--agent", "a", "--file", file, "--skills-dir", skills];
   const first = aps(args, env);
   assert.equal(first.code, 0, first.err);
   assert.ok(existsSync(path.join(env.HOME, ".local", "bin", "aps")));
   assert.deepEqual(readdirSync(skills).sort(), ["close-problem", "focus", "frame-problem", "reframe"]);
-  assert.match(read(file), /problems\/agents\/me\/PROBLEMS\.md/);
+  assert.match(read(file), /problems\/agents\/a\/PROBLEMS\.md/);
   const before = read(file);
   const second = aps(args, env);
   assert.equal(second.code, 0, second.err);
@@ -677,8 +677,8 @@ test("every command works off the settings install wrote, with no flags", () => 
   const { env } = machine();
   mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
   const ov = path.join(env.HOME, "problems");
-  aps(["install", "claude-code", "--overlay", ov, "--agent", "me", "--all-projects"], env);
-  const register = path.join(ov, "agents", "me", "PROBLEMS.md");
+  aps(["install", "claude-code", "--overlay", ov, "--agent", "a", "--all-projects"], env);
+  const register = path.join(ov, "agents", "a", "PROBLEMS.md");
   writeFileSync(register, read(register).replace("Mission:", "Mission: ship the current project"));
   for (const cmd of [["lint"], ["report"], ["doctor"]]) {
     const r = aps(cmd, env);
@@ -688,4 +688,185 @@ test("every command works off the settings install wrote, with no flags", () => 
   // No P1 yet in a template register, but it must fail on the problem id, not
   // on "no overlay": the block tells the agent to run it with no flags.
   assert.doesNotMatch(r.err, /no overlay/);
+});
+
+// ------------------------------------------- where the registry is stored
+
+import { overlayChoices, pickOverlay, cliAgentFor, DEFAULT_AGENT_ID } from "../lib/install.js";
+
+test("inside a repository the first place offered is that repository", () => {
+  const { env } = machine();
+  const repo = path.join(env.HOME, "code", "site");
+  mkdirSync(path.join(repo, ".git"), { recursive: true });
+  mkdirSync(path.join(repo, "src"), { recursive: true });
+  const choices = overlayChoices({ targets: ["claude-code"], cwd: path.join(repo, "src"), env });
+  assert.equal(choices[0].path, path.join(repo, ".problems"));
+  assert.equal(choices[1].path, path.join(env.CLAUDE_CONFIG_DIR, "problems"));
+});
+
+test("each runtime offers its own home, and none offers a bare home-directory folder", () => {
+  const { env } = machine();
+  const cwd = mkdtempSync(path.join(tmpdir(), "aps-norepo-"));
+  writeFileSync(path.join(env.HOME, "unused"), "");
+  mkdirSync(env.OPENCLAW_STATE_DIR, { recursive: true });
+  writeFileSync(path.join(env.OPENCLAW_STATE_DIR, "openclaw.json"), JSON.stringify({ agents: { defaults: { workspace: path.join(env.HOME, "ws") } } }));
+  const paths = (targets) => overlayChoices({ targets, cwd, env }).map((c) => c.path);
+  assert.deepEqual(paths(["codex"]), [path.join(env.CODEX_HOME, "problems")]);
+  assert.deepEqual(paths(["openclaw"]), [path.join(env.HOME, "ws", "problems")]);
+  assert.deepEqual(paths(["claude-code", "codex"]), [path.join(env.CLAUDE_CONFIG_DIR, "problems"), path.join(env.CODEX_HOME, "problems")]);
+  for (const t of ["claude-code", "codex", "openclaw", "agents-md"]) {
+    assert.ok(!paths([t]).includes(path.join(env.HOME, "problems")), t);
+  }
+});
+
+test("an OpenClaw config with no workspace falls back to the gateway's default workspace", () => {
+  const { env } = machine();
+  const cwd = mkdtempSync(path.join(tmpdir(), "aps-norepo-"));
+  const choices = overlayChoices({ targets: ["openclaw"], cwd, env });
+  assert.deepEqual(choices.map((c) => c.path), [path.join(env.OPENCLAW_STATE_DIR, "workspace", "problems")]);
+});
+
+test("an answer picks a numbered place, or names one of its own", () => {
+  const choices = [{ path: "/r/.problems" }, { path: "/h/.claude/problems" }];
+  assert.equal(pickOverlay("", choices, { cwd: "/w", home: "/h" }), "/r/.problems");
+  assert.equal(pickOverlay("2", choices, { cwd: "/w", home: "/h" }), "/h/.claude/problems");
+  assert.equal(pickOverlay("3", choices, { cwd: "/w", home: "/h" }), null);
+  assert.equal(pickOverlay("~/notes/problems", choices, { cwd: "/w", home: "/h" }), "/h/notes/problems");
+  assert.equal(pickOverlay("docs/problems", choices, { cwd: "/w", home: "/h" }), "/w/docs/problems");
+  assert.equal(pickOverlay("2", [], { cwd: "/w", home: "/h" }), "/w/2");
+});
+
+test("with no --overlay and nobody to ask, install lists the places and writes nothing", () => {
+  const { env } = machine();
+  mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+  const r = aps(["install", "claude-code"], env);
+  assert.equal(r.code, 2);
+  assert.match(r.err, /--overlay/);
+  assert.ok(r.err.includes(path.join(env.CLAUDE_CONFIG_DIR, "problems")), r.err);
+  assert.equal(existsSync(path.join(env.CLAUDE_CONFIG_DIR, "settings.json")), false);
+});
+
+test("--yes takes the first place offered: the repository the install runs in", () => {
+  const { env } = machine();
+  mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+  const repo = path.join(env.HOME, "site");
+  mkdirSync(path.join(repo, ".git"), { recursive: true });
+  const r = spawnSync(process.execPath, [APS, "install", "claude-code", "--yes"], {
+    cwd: repo,
+    encoding: "utf8",
+    env: { ...process.env, APS_OVERLAY: "", APS_AGENT: "", ...env },
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.equal(json(path.join(env.APS_CONFIG_HOME, "config.json")).overlayPath, path.join(repo, ".problems"));
+  assert.ok(existsSync(path.join(repo, ".problems", "agents", DEFAULT_AGENT_ID, "PROBLEMS.md")));
+});
+
+test("a relative --overlay is read against the directory the install runs in", () => {
+  const { env } = machine();
+  mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+  const proj = path.join(env.HOME, "proj");
+  mkdirSync(proj, { recursive: true });
+  const r = spawnSync(process.execPath, [APS, "install", "claude-code", "--overlay", ".problems"], {
+    cwd: proj,
+    encoding: "utf8",
+    env: { ...process.env, APS_OVERLAY: "", APS_AGENT: "", ...env },
+  });
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+  assert.equal(json(path.join(env.APS_CONFIG_HOME, "config.json")).overlayPath, path.join(proj, ".problems"));
+});
+
+test("with no named agent the register goes under a neutral default, and no agent is recorded", () => {
+  const { env } = machine();
+  mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+  const ov = path.join(env.HOME, "store");
+  const r = aps(["install", "claude-code", "--overlay", ov, "--all-projects"], env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.equal(DEFAULT_AGENT_ID, "default");
+  assert.ok(existsSync(path.join(ov, "agents", "default", "PROBLEMS.md")));
+  assert.equal(json(path.join(env.APS_CONFIG_HOME, "config.json")).agentId, undefined);
+});
+
+test("OpenClaw with no --agents gets a register for the agent it routes to by default", () => {
+  const { env } = machine();
+  mkdirSync(env.OPENCLAW_STATE_DIR, { recursive: true });
+  writeFileSync(path.join(env.OPENCLAW_STATE_DIR, "openclaw.json"), JSON.stringify({ agents: { list: [{ id: "helper" }, { id: "lead", default: true }] } }));
+  const ov = path.join(env.HOME, "store");
+  const r = aps(["install", "openclaw", "--overlay", ov], env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.deepEqual(readdirSync(path.join(ov, "agents")), ["lead"]);
+});
+
+test("a place an earlier install recorded is offered first, as where the problems are now", () => {
+  const { env } = machine();
+  const cwd = mkdtempSync(path.join(tmpdir(), "aps-norepo-"));
+  const stored = path.join(env.HOME, "store");
+  mkdirSync(env.APS_CONFIG_HOME, { recursive: true });
+  writeFileSync(path.join(env.APS_CONFIG_HOME, "config.json"), JSON.stringify({ overlayPath: stored }));
+  const choices = overlayChoices({ targets: ["codex"], cwd, env });
+  assert.deepEqual(choices.map((c) => c.path), [stored, path.join(env.CODEX_HOME, "problems")]);
+  assert.match(choices[0].label, /stored now/);
+});
+
+test("installing a second runtime with --yes keeps the registry the first install chose", () => {
+  const { env } = machine();
+  mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+  mkdirSync(env.CODEX_HOME, { recursive: true });
+  const repo = path.join(env.HOME, "site");
+  mkdirSync(path.join(repo, ".git"), { recursive: true });
+  const elsewhere = mkdtempSync(path.join(tmpdir(), "aps-norepo-"));
+  const run = (args, cwd) => spawnSync(process.execPath, [APS, ...args], {
+    cwd, encoding: "utf8", env: { ...process.env, APS_OVERLAY: "", APS_AGENT: "", ...env },
+  });
+  const first = run(["install", "claude-code", "--yes"], repo);
+  assert.equal(first.status, 0, `${first.stdout}\n${first.stderr}`);
+  const second = run(["install", "codex", "--yes"], elsewhere);
+  assert.equal(second.status, 0, `${second.stdout}\n${second.stderr}`);
+  assert.equal(json(path.join(env.APS_CONFIG_HOME, "config.json")).overlayPath, path.join(repo, ".problems"));
+  assert.equal(existsSync(path.join(env.CODEX_HOME, "problems")), false);
+});
+
+test("with no named agent, an empty overlay gets the default, one register is reused, and several need a name", () => {
+  assert.deepEqual(cliAgentFor({ existing: [] }), { id: DEFAULT_AGENT_ID });
+  assert.deepEqual(cliAgentFor({ existing: ["me"] }), { id: "me" });
+  assert.deepEqual(cliAgentFor({ agent: "x", existing: ["me"] }), { id: "x" });
+  assert.deepEqual(cliAgentFor({ recorded: "b", existing: ["a", "b"] }), { id: "b" });
+  assert.match(cliAgentFor({ existing: ["a", "b"] }).error, /--agent/);
+  assert.match(cliAgentFor({ recorded: "c", existing: ["a", "b"] }).error, /--agent/);
+});
+
+test("re-installing over an overlay that already holds one register keeps it and adds no default", () => {
+  const { env } = machine();
+  mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+  const ov = path.join(env.HOME, "store");
+  mkdirSync(path.join(ov, "agents", "me"), { recursive: true });
+  writeFileSync(path.join(ov, "agents", "me", "PROBLEMS.md"), "Mission: x\n");
+  const r = aps(["install", "claude-code", "--overlay", ov, "--all-projects"], env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.deepEqual(readdirSync(path.join(ov, "agents")), ["me"]);
+  assert.equal(read(path.join(ov, "agents", "me", "PROBLEMS.md")), "Mission: x\n");
+});
+
+test("re-installing over an overlay with several registers and no --agent is refused before any write", () => {
+  const { env } = machine();
+  mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+  const ov = path.join(env.HOME, "store");
+  for (const id of ["a", "b"]) mkdirSync(path.join(ov, "agents", id), { recursive: true });
+  const r = aps(["install", "claude-code", "--overlay", ov], env);
+  assert.notEqual(r.code, 0);
+  assert.match(r.err, /--agent/);
+  assert.deepEqual(readdirSync(path.join(ov, "agents")), ["a", "b"]);
+  assert.equal(existsSync(path.join(env.APS_CONFIG_HOME, "config.json")), false);
+});
+
+test("several registers are fine when the settings already name the one this install is for", () => {
+  const { env } = machine();
+  mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+  const ov = path.join(env.HOME, "store");
+  for (const id of ["a", "b"]) mkdirSync(path.join(ov, "agents", id), { recursive: true });
+  mkdirSync(env.APS_CONFIG_HOME, { recursive: true });
+  writeFileSync(path.join(env.APS_CONFIG_HOME, "config.json"), JSON.stringify({ overlayPath: ov, agentId: "b" }));
+  const r = aps(["install", "claude-code", "--overlay", ov, "--all-projects"], env);
+  assert.equal(r.code, 0, `${r.out}\n${r.err}`);
+  assert.deepEqual(readdirSync(path.join(ov, "agents")), ["a", "b"]);
+  assert.equal(json(path.join(env.APS_CONFIG_HOME, "config.json")).agentId, "b");
 });

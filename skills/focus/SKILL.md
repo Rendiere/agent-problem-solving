@@ -14,6 +14,8 @@ The block at the top of each turn names this thread's problem and ends with a sh
 | Drift | The work no longer moves `done when`, and nobody asked for that | Open the reply with "🧭 I noticed we're veering off <ID title>: <what pulled us away>", then 1. Go back to the quest 2. Reframe it 3. Park it and switch. Write `pending: drift <date>` and do no further work on this thread until they answer. |
 | Not problem-solving | A fact, a reminder, chat | Answer. No entry. |
 
+A task whose steps you could write down now gets no entry of its own, unless it is a side task that unblocks the active problem (see below). While a problem is active, a task that does not move `done when` is still a switch or drift, so ask before doing it.
+
 Related is not the same as moving it: a question about how the tools work can be relevant to a problem without moving its `done when`. Your own drift counts too, so name it when your next step would not move `done when`.
 
 ## Side tasks

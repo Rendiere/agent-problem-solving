@@ -3,7 +3,7 @@
   "owner": { "name": "Agent Problem Solving" },
   "metadata": {
     "description": "One named problem per thread, re-read every turn",
-    "version": "0.3.0"
+    "version": "0.3.1"
   },
   "plugins": [
     {

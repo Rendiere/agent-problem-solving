@@ -49,7 +49,7 @@ def injection(register_text, thread):
 import {{ parseRegister }} from '{CORE}/lib/register.js';
 import {{ buildInjection }} from '{CORE}/lib/inject.js';
 const r = parseRegister(process.argv[1]);
-process.stdout.write(buildInjection({{ register: r }}, {{ thread: {json.dumps(thread)}, reading: 120000 }}));
+process.stdout.write(buildInjection(r, {{ thread: {json.dumps(thread)}, reading: {{ known: true, tokens: 120000, fresh: true, compactions: 0 }} }}));
 """
     return subprocess.check_output(["node", "--input-type=module", "-e", js, register_text]).decode()
 

@@ -28,7 +28,9 @@ decision log; a hand edit parses, but `aps lint` flags it.
 - thread: <the chat thread it lives in, e.g. topic:1234, dir:~/code/website, or "any">
 - parent: <the problem this side task unblocks; leave out otherwise>
 - links: <tickets in any tracker, e.g. LIN-12, JIRA-4>
-- pending: <enter | switch | park | close | drop | reset | drift> <YYYY-MM-DD>
+- pending: <frame | enter | switch | park | close | drop | reset | drift> <YYYY-MM-DD>
+    frame  waiting on the wording of the problem, before the rest is drafted
+    enter  waiting on the whole entry, once the wording is agreed
 - confirmed: <YYYY-MM-DD> <what the operator confirmed>
 - pushbacks: 0
 - corrections: 0

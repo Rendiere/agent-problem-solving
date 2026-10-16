@@ -1,11 +1,11 @@
 ---
 name: frame-problem
-description: Use when the operator brings a problem, a gap between where things are and where they want them with no obvious route to close it, or when their feedback on a task keeps saying it isn't quite what they want. Not for a task whose steps you could write down now, except a side task's child entry. Drafts one register entry and asks the operator to confirm it in one message.
+description: Use when the operator brings a problem, a gap between where things are and where they want them with no obvious route to close it, or when their feedback on a task keeps saying it isn't quite what they want. Not for a task whose steps you could write down now, except a side task's child entry. Agrees the problem statement first, then drafts the rest of the entry for approval.
 ---
 
 # Frame a problem
 
-Write the problem down before solving it. The order is what is wrong, the simplest approach that could meet it, then the goal.
+Write the problem down before solving it. Framing asks twice. The first question is what is wrong. Everything else on the entry rests on that wording, so it waits until the operator has agreed it.
 
 **Problem or task.** A problem is a gap between where things are and where the operator wants them, and the route to closing it isn't obvious: it needs options, probably more than one sitting, and a clear done-when. "Sign-ups dropped 30% last month and we don't know why" is a problem. A task is work whose steps you could write down now, like "add a CSV export to the homepage": do it and register nothing.
 
@@ -13,14 +13,41 @@ Write the problem down before solving it. The order is what is wrong, the simple
 
 1. **Read the register and the mission line.** If an active problem already covers this, use it and stop here.
 2. **Gather what you have.** Note what you already know and what is missing. For each missing piece, name how you will get it: a query, a file, a question.
-3. **Draft the entry** with `status: proposed`:
-   - `problem`: what is wrong or missing, in one or two sentences, with no solution in it.
+
+## Stage one: agree the problem statement
+
+3. **Open the entry with the problem alone** and `status: proposed`:
+   - `problem`: what is wrong or missing, in one or two sentences. No solution in it, and nothing about what fixing it is worth.
+   - `thread`, `updated` and `state`.
+   - `parent`: set it when this is a side task that unblocks another problem.
+   - `pending: frame <date>`, so the question survives a reset.
+
+   Leave `serves`, `done when`, `rules out` and the approach empty. They all rest on the problem, so they are written once its wording is agreed.
+4. **Ask for the wording.** Send one short Telegram-safe Markdown message with blank lines between sections:
+
+   ```markdown
+   🎯 **Problem**
+   > _<problem>_
+
+   Have I got the problem right?
+
+   1. Yes
+   2. Reword
+   ```
+
+   Add number-only buttons when the runtime supports them. Start no work, and draft no further sections, until they answer.
+5. **Loop until they agree.** On a reword, put their words on the entry, keep `pending: frame <date>`, and ask again. There is no round limit here: the entry is built on their wording, not yours.
+
+## Stage two: draft the rest and ask for approval
+
+6. **Fill in the entry** against the agreed wording:
    - `serves`: the mission metric it moves. If it moves none, say so; it may not be worth doing.
    - `done when`: checks anyone could run — a number in the data, a screenshot, a sent email. Store several checks in one field, separated by semicolons.
    - `rules out`: what waits until this is done.
-   - `thread`, `updated`, `state`, and `links` for any ticket it relates to.
-   - `parent`: set it when this is a side task that unblocks another problem.
-4. **Ask once.** Send one short Telegram-safe Markdown message with blank lines between sections. Use this shape and omit no section:
+   - `links`: any ticket it relates to.
+
+   Write `pending: enter <date>` on the entry so the question survives a reset. Set it with the `Change it:` command from the reminder, quoted as `'pending=enter <date>'`, so the log carries both stages.
+7. **Ask once.** Send one message in this shape and omit no section:
 
    ```markdown
    🎯 **Problem**
@@ -44,9 +71,9 @@ Write the problem down before solving it. The order is what is wrong, the simple
    3. Not now
    ```
 
-   Put every done-when check on its own checklist line. Add number-only buttons when the runtime supports them. Write `pending: enter <date>` on the entry so the question survives a reset, and start no work on it until they answer.
-5. **On approval, register first.** Use the complete `Change it:` command from the reminder with `set <ID> status=active --confirmed --clear-pending`. The command carries the current thread and session, which is how the log proves who confirmed it. Do not start work or send another status until the command succeeds.
-6. **Send and pin the commitment.** Send one registered message in this shape:
+   Put every done-when check on its own checklist line. Add number-only buttons when the runtime supports them. Start no work on it until they answer.
+8. **On approval, register first.** Use the complete `Change it:` command from the reminder with `set <ID> status=active --confirmed --clear-pending`. The command carries the current thread and session, which is how the log proves who confirmed it. Do not start work or send another status until the command succeeds.
+9. **Send and pin the commitment.** Send one registered message in this shape:
 
    ```markdown
    📌 **Registered**
@@ -67,7 +94,7 @@ Write the problem down before solving it. The order is what is wrong, the simple
 
    In an OpenClaw Telegram session, send it through the message tool to the current chat and topic with the current agent's `accountId` and `delivery: { pin: { enabled: true, required: true } }`. The required pin makes pin failure visible. After success, tell the operator: `Pinned in this topic.` If the call reports a pin failure, do not resend the registered message; say: `The problem is registered, but pinning failed: <plain reason>.` Never claim it is pinned without a successful tool result. Where the runtime has no delivery-pin capability, send the registered message and say that pinning is unavailable there.
 
-On "reword", edit the entry and ask again. On "not now", leave it `proposed` and clear the pending line.
+On a reword in stage two, edit the entry and ask again. When the reword changes what is wrong rather than the detail around it, go back to stage one and agree the wording first. On "not now", leave it `proposed` and clear the pending line.
 
 A thread holds one active problem. If a second one is needed here, ask which to park. Only the operator moves a problem to active, done or dropped.
 

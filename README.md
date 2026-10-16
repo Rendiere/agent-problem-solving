@@ -87,15 +87,19 @@ the problem is stored in a file that every new session reads.
    yet. A quick fact or a task with clear steps just gets answered or done. If
    you keep telling the agent a task isn't quite what you want, it suggests
    writing it down as a problem.
-2. The agent drafts the problem: what is wrong, and a check anyone could run to
-   prove it fixed. It waits for you.
-3. You approve it, and it becomes the active problem. In OpenClaw Telegram,
+2. The agent writes down what is wrong, in one or two sentences, and asks
+   whether it has the problem right. You say yes or give it your own words,
+   and it asks again until the two of you agree.
+3. With the wording agreed, it drafts the rest: what the problem serves, a
+   check anyone could run to prove it fixed, what waits until then, and the
+   simplest approach. It waits for you.
+4. You approve it, and it becomes the active problem. In OpenClaw Telegram,
    the agent sends a registered message and pins it in the topic. Each project
    or chat thread has one active problem at a time.
-4. Before every reply, the agent sees the active problem and its check. If the
+5. Before every reply, the agent sees the active problem and its check. If the
    conversation drifts, or you push back twice, it stops and asks whether to go
    back, reword the problem, or park it.
-5. The problem ends one of three ways. Done: the check passed, you confirmed,
+6. The problem ends one of three ways. Done: the check passed, you confirmed,
    and the agent saved one line on what it learned. Parked: its state is
    written down, and it comes back when you return to it. Dropped: you called
    it off.

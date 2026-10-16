@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { parseRegister, lintRegister, selectForThread, threadFromSessionKey, threadMatches, normaliseThread, STATUSES } from "../lib/register.js";
+import { parseRegister, lintRegister, selectForThread, threadFromSessionKey, threadMatches, normaliseThread, uncomment, STATUSES } from "../lib/register.js";
 import { buildInjection } from "../lib/inject.js";
-import { setFields } from "../lib/edit.js";
+import { setFields, hasEntry } from "../lib/edit.js";
 import { gaugeLine, gaugeLevel } from "../lib/gauge.js";
 import { validateConfig } from "../lib/config.js";
+import { outcomeFor } from "../lib/ledger.js";
 
 const tokens = (text) => Math.ceil(text.length / 4);
 
@@ -220,6 +221,7 @@ test("every question the block tells the agent to ask is written down as a pendi
   assert.match(onProblem, /`pending: switch <date>`/);
   assert.match(onProblem, /`pending: drift <date>`/);
   const none = buildInjection(parseRegister("Mission: m\n"), { thread: "topic:5", reading: 1000 });
+  assert.match(none, /`pending: frame <date>`/);
   assert.match(none, /`pending: enter <date>`/);
   const past = buildInjection(parseRegister(SAMPLE), { thread: "topic:11", reading: 520_000 });
   assert.match(past, /`pending: reset \d{4}-\d{2}-\d{2}`/);
@@ -340,4 +342,140 @@ test("the reminder names the fields the counts live in", () => {
   assert.match(text, /corrections:/);
   // R10 says "state line"; the fields are where the parser reads them from.
   assert.doesNotMatch(text, /counts in the state line|keep them in `state`/i);
+});
+
+test("an edit skips the commented-out example and finds the real entry", () => {
+  const template = readFileSync(new URL("../templates/PROBLEMS.md", import.meta.url), "utf8");
+  // A register still carrying the template's commented example, plus one real
+  // entry that happens to share the example's id.
+  const text = `${template}\n## P1. Real one\n- status: proposed\n- thread: topic:1\n- problem: sign-ups fell and nobody knows why\n`;
+  const out = setFields(text, "P1", { status: "active", confirmed: "2026-10-16 active" });
+  const parsed = parseRegister(out);
+  assert.equal(parsed.problems.length, 1);
+  assert.equal(parsed.problems[0].title, "Real one");
+  assert.equal(parsed.problems[0].status, "active");
+  // The example inside the comment is untouched, so the template still reads
+  // as documentation.
+  assert.ok(out.includes("## P1. <short action title>"), "the commented example survives");
+  assert.match(out.match(/<!--[\s\S]*?-->/)[0], /- status: proposed/);
+});
+
+test("an id that exists only inside a comment is not an entry to edit", () => {
+  const template = readFileSync(new URL("../templates/PROBLEMS.md", import.meta.url), "utf8");
+  assert.equal(hasEntry(template, "P1"), false);
+  assert.throws(() => setFields(template, "P1", { status: "active" }), /P1 is not in the register/);
+});
+
+// ------------------------------------------- framing in two stages
+
+const FRAMING = "Mission: m\n\n## P1. Sign-ups fell\n- status: proposed\n- problem: sign-ups dropped 30% last month and nobody knows why\n- thread: topic:5\n- pending: frame 2026-10-16\n- updated: 2026-10-16\n";
+
+test("the block stops the agent at the wording question and names what waits", () => {
+  const text = buildInjection(parseRegister(FRAMING), { thread: "topic:5", reading: 1000 });
+  assert.match(text, /STOP: waiting for them to confirm or reword the problem statement on P1/);
+  assert.match(text, /draft no serves, done-when, rules-out or approach until they do/);
+  assert.match(text, /Do no further work on this thread until they answer/);
+});
+
+test("a wording question is a known pending kind", () => {
+  assert.deepEqual(lintCodes(FRAMING), []);
+  assert.equal(parseRegister(FRAMING).problems[0].pending.known, true);
+});
+
+test("lint reads the two stages of framing", () => {
+  // Nothing to ask about.
+  const noWording = FRAMING.replace("- problem: sign-ups dropped 30% last month and nobody knows why\n", "");
+  assert.ok(lintCodes(noWording).includes("frame-without-problem"), lintCodes(noWording).join(","));
+  // The sections that rest on the problem, drafted before its wording is agreed.
+  const early = `${FRAMING}- serves: sign-ups per week\n- done when: sign-ups back above 400 a week\n`;
+  assert.ok(lintCodes(early).includes("frame-ahead-of-itself"), lintCodes(early).join(","));
+  // The wording question belongs to an entry nobody has confirmed yet.
+  const active = FRAMING.replace("- status: proposed", "- status: active");
+  assert.ok(lintCodes(active).includes("frame-not-proposed"), lintCodes(active).join(","));
+  // Stage two carries the same sections with no complaint.
+  const stageTwo = early.replace("- pending: frame 2026-10-16", "- pending: enter 2026-10-16");
+  assert.deepEqual(lintCodes(stageTwo), []);
+});
+
+test("agreeing the wording is logged as an answer, not as a status change", () => {
+  assert.equal(outcomeFor("frame", "proposed", "proposed"), "wording agreed");
+});
+
+test("the skill agrees the wording before it drafts anything else", () => {
+  const frame = readFileSync(new URL("../skills/frame-problem/SKILL.md", import.meta.url), "utf8");
+  const wording = frame.indexOf("pending: frame <date>");
+  const rest = frame.indexOf("pending: enter <date>");
+  assert.ok(wording > 0 && rest > wording, "the wording question comes before the approval question");
+  assert.match(frame, /Stage one: agree the problem statement/);
+  assert.match(frame, /Stage two: draft the rest and ask for approval/);
+  // Stage one asks about the wording and nothing else.
+  const stageOne = frame.slice(wording, rest);
+  assert.match(stageOne, /Have I got the problem right\?/);
+  assert.doesNotMatch(stageOne, /Done when|Out of scope/);
+  // No past-incident framing in a procedure the agent reads every time.
+  assert.doesNotMatch(frame, /this fixes|used to|previously|the old behaviour/i);
+});
+
+test("an HTML comment nobody closed is reported, not silently obeyed", () => {
+  // Everything after an unclosed comment is invisible to the parser, so a
+  // register that still holds an active problem would otherwise read as empty.
+  const text = "Mission: m\n<!-- a note I never closed\n\n## P1. Real one\n- status: active\n- thread: topic:1\n- done when: x\n- confirmed: 2026-10-16 active\n";
+  const register = parseRegister(text);
+  assert.equal(register.problems.length, 0);
+  assert.equal(register.commentOpenedAt, 2);
+  const found = lintRegister(register).find((f) => f.code === "comment-unclosed");
+  assert.ok(found, lintCodes(text).join(","));
+  assert.equal(found.level, "error");
+  assert.match(found.message, /line 2/);
+  // A comment that is closed says nothing.
+  assert.equal(parseRegister(`${text}-->\n`).commentOpenedAt, 0);
+  assert.deepEqual(lintCodes(readFileSync(new URL("../templates/PROBLEMS.md", import.meta.url), "utf8")), []);
+});
+
+test("comment spans are read line by line, wherever they open and close", () => {
+  const visible = (text) => uncomment(text.split("\n")).lines;
+  assert.deepEqual(visible(["a <!-- b --> c", "d"].join("\n")), ["a  c", "d"]);
+  assert.deepEqual(visible(["<!--x--> ## P1.", "- status: active"].join("\n")), [" ## P1.", "- status: active"]);
+  assert.deepEqual(visible(["a <!-- b", "c", "d --> e"].join("\n")), ["a ", "", " e"]);
+  // A close with no opener is ordinary text, as it is in markdown.
+  assert.deepEqual(visible("--> stray"), ["--> stray"]);
+  // One line per line, always, so a line number means the same thing to the
+  // parser and to a text editor.
+  const many = "a\n<!--\nb\n-->\nc";
+  assert.equal(visible(many).length, many.split("\n").length);
+});
+
+test("the per-turn block says the register went quiet, not that there is no problem", () => {
+  // The unclosed comment hides the active entry from the parser, so the block
+  // has to name the file and the line rather than report an empty thread.
+  const text = "Mission: m\n<!-- a note I never closed\n\n## P1. Real one\n- status: active\n- thread: topic:5\n- done when: x\n- confirmed: 2026-10-16 active\n";
+  const block = buildInjection(parseRegister(text), { thread: "topic:5", reading: 1000, registerPath: "/p/PROBLEMS.md" });
+  assert.match(block, /HTML comment opens on line 2 of \/p\/PROBLEMS\.md/);
+  assert.match(block, /do not act as if no problem were active/);
+  assert.doesNotMatch(block, /no problem\./);
+  // An automated turn gets the same notice; it must not read as an empty register either.
+  assert.match(buildInjection(parseRegister(text), { thread: "topic:5", actor: "automated" }), /never closed|never be closed|is never closed/);
+});
+
+test("a stale wording question is a warning, so an answer still goes through", () => {
+  // Parking from stage one is an ordinary answer. An error here would make
+  // `aps set` refuse it.
+  const parked = "Mission: m\n\n## P1. Sign-ups fell\n- status: parked\n- problem: x\n- thread: topic:5\n- pending: frame 2026-10-16\n- state: waiting on the wording\n";
+  const found = lintRegister(parseRegister(parked)).find((f) => f.code === "frame-not-proposed");
+  assert.ok(found);
+  assert.equal(found.level, "warn");
+  assert.match(found.message, /--clear-pending/);
+});
+
+test("the log tells a reword from an agreement", () => {
+  assert.equal(outcomeFor("frame", "proposed", "proposed", "frame"), "reworded");
+  assert.equal(outcomeFor("frame", "proposed", "proposed", "enter"), "wording agreed");
+  assert.equal(outcomeFor("frame", "proposed", "proposed", "unknown"), "wording agreed");
+  // Answering the wording question by parking or entering is that, not a switch.
+  assert.equal(outcomeFor("frame", "proposed", "parked", "unknown"), "park");
+  assert.equal(outcomeFor("frame", "proposed", "active", "unknown"), "enter");
+  // The kinds that were already here keep their wording.
+  assert.equal(outcomeFor("enter", "proposed", "active"), "enter");
+  assert.equal(outcomeFor("switch", "parked", "active"), "switch");
+  assert.equal(outcomeFor("close", "active", "active"), "keep going");
 });

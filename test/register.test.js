@@ -2,10 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { parseRegister, lintRegister, selectForThread, threadFromSessionKey, threadMatches, normaliseThread, STATUSES } from "../lib/register.js";
-import { buildInjection } from "../lib/inject.js";
+import { buildInjection, doneWhenLine, splitChecks } from "../lib/inject.js";
 import { setFields } from "../lib/edit.js";
 import { gaugeLine, gaugeLevel } from "../lib/gauge.js";
 import { validateConfig } from "../lib/config.js";
+import { unpinAfter, stalePins, pinOf, UNPIN_STATUSES } from "../lib/pin.js";
 
 const tokens = (text) => Math.ceil(text.length / 4);
 
@@ -186,8 +187,12 @@ test("the block stays inside its token budget at the worst shape it can take", (
   // parent, other threads, last parked, mission, gauge) at about 300 tokens;
   // the per-turn check adds the rest and is what a model that never opens the
   // focus skill still has in front of it.
+  // The done-when is a twelve-check list, so the block carries as much of one
+  // as its cap allows: that is the shape the budget has to hold, not a short
+  // one-liner.
+  const checklist = Array.from({ length: 12 }, (_, i) => `check ${i + 1} is a sentence someone can actually run and see`).join("; ");
   const reg = `Mission: ten words about the one outcome this agent exists for\n${Array.from({ length: 7 }, (_, i) =>
-    `## P${i + 1}. Problem number ${i + 1} with a reasonably long action title\n- status: ${i < 5 ? "active" : i === 5 ? "parked" : "proposed"}\n- problem: ${"word ".repeat(25)}\n- done when: ${"check ".repeat(20)}\n- rules out: ${"later ".repeat(10)}\n- state: ${"state ".repeat(15)}\n- thread: topic:${i + 1}\n- updated: 2026-10-13\n`,
+    `## P${i + 1}. Problem number ${i + 1} with a reasonably long action title\n- status: ${i < 5 ? "active" : i === 5 ? "parked" : "proposed"}\n- problem: ${"word ".repeat(25)}\n- done when: ${checklist}\n- rules out: ${"later ".repeat(10)}\n- state: ${"state ".repeat(15)}\n- thread: topic:${i + 1}\n- updated: 2026-10-13\n`,
   ).join("\n")}`;
   const o = {
     thread: "topic:1",
@@ -197,8 +202,11 @@ test("the block stays inside its token budget at the worst shape it can take", (
   };
   const state = buildInjection(parseRegister(reg), { ...o, includeCheck: false });
   const full = buildInjection(parseRegister(reg), o);
-  assert.ok(tokens(state) <= 300, `state ${tokens(state)} tokens`);
-  assert.ok(tokens(full) <= 330, `full ${tokens(full)} tokens`);
+  // The budget grew with the done-when cap: closing a problem on a clipped
+  // checklist was the bug, so the block pays about 80 tokens for the checks it
+  // carries and names the ones it had to leave in the register.
+  assert.ok(tokens(state) <= 220, `state ${tokens(state)} tokens`);
+  assert.ok(tokens(full) <= 390, `full ${tokens(full)} tokens`);
 
   // The shape a turn actually meets: one active problem, ordinary lengths.
   const typical = buildInjection(parseRegister(SAMPLE), { ...o, thread: "topic:11", reading: { tokens: 120_000, fresh: true, known: true } });
@@ -340,4 +348,103 @@ test("the reminder names the fields the counts live in", () => {
   assert.match(text, /corrections:/);
   // R10 says "state line"; the fields are where the parser reads them from.
   assert.doesNotMatch(text, /counts in the state line|keep them in `state`/i);
+});
+
+// A done-when is the whole test for closing a problem. The block used to clip
+// it at 70 characters, which let the agent close on the first check and never
+// see the rest.
+const CHECKLIST = [
+  "the nightly job has run green three days in a row",
+  "the dashboard shows zero failed rows for those days",
+  "the runbook names who to call when it fails",
+  "the operator has read the summary email and said it reads right",
+].join("; ");
+
+test("the block carries every check in a done-when, on a turn from the person and on an automated one", () => {
+  const reg = parseRegister(`Mission: m\n\n## P1. Nightly job\n- status: active\n- thread: topic:1\n- done when: ${CHECKLIST}\n- confirmed: 2026-10-14 active\n- updated: 2026-10-14\n`);
+  for (const actor of ["person", "automated"]) {
+    const text = buildInjection(reg, { thread: "topic:1", actor, reading: 1000 });
+    for (const check of CHECKLIST.split("; ")) {
+      assert.ok(text.includes(check), `${actor} turn dropped "${check}"`);
+    }
+    assert.doesNotMatch(text, /Done when: [^\n]*…/, `${actor} turn clipped the done-when`);
+  }
+});
+
+test("a done-when past the cap keeps whole checks and says how many are left", () => {
+  const checks = Array.from({ length: 12 }, (_, i) => `check number ${i + 1} is a sentence long enough to matter here`);
+  const line = doneWhenLine(checks.join("; "));
+  assert.ok(line.length <= 320, `line is ${line.length} chars`);
+  // Whole checks only: every check in the line is one of the originals.
+  const shown = line.replace(/ \(\+\d+ more checks? in the register[^)]*\)$/, "").split("; ");
+  for (const check of shown) assert.ok(checks.includes(check), `"${check}" was cut mid-way`);
+  assert.match(line, /\(\+\d+ more checks in the register/);
+  assert.ok(shown.length >= 3, `only ${shown.length} of 12 checks carried`);
+});
+
+test("one check too long to fit is cut, says it was cut, and stays inside the cap", () => {
+  const one = `the report shows ${"a long clause ".repeat(60)}signed off`.replace(/\s+/g, " ").trim();
+  const line = doneWhenLine(one);
+  assert.ok(line.length <= 320, `line is ${line.length} chars`);
+  assert.match(line, /cut — read the full done-when in the register before closing/);
+  assert.ok(one.startsWith(line.split(" …")[0]), "the cut keeps the start of the check");
+});
+
+test("every done-when, whatever its shape, comes back inside the cap", () => {
+  const shapes = [
+    "x".repeat(3000),
+    `${"word ".repeat(400)}done`,
+    Array.from({ length: 40 }, (_, i) => `check ${i + 1} is a whole sentence about something checkable`).join("; "),
+    Array.from({ length: 20 }, (_, i) => `${i + 1}. check ${i + 1} is a whole sentence about something checkable`).join(" "),
+  ];
+  for (const shape of shapes) assert.ok(doneWhenLine(shape).length <= 320, `${shape.slice(0, 20)}… came back ${doneWhenLine(shape).length} chars`);
+});
+
+test("the automated block stays short with a done-when at the cap", () => {
+  // The short block pays for the same checklist as the full one: an automated
+  // turn works towards the done-when too, and a clipped one is what let a
+  // problem be closed on its first check.
+  const checklist = Array.from({ length: 12 }, (_, i) => `check ${i + 1} is a sentence someone can actually run and see`).join("; ");
+  const reg = parseRegister(`Mission: ten words about the one outcome this agent exists for\n\n## P1. Problem number one with a reasonably long action title\n- status: active\n- thread: topic:1\n- problem: ${"word ".repeat(25)}\n- done when: ${checklist}\n- state: ${"state ".repeat(15)}\n- updated: 2026-10-13\n- pending: drift 2026-10-13\n`);
+  const text = buildInjection(reg, { thread: "topic:1", actor: "automated", reading: { tokens: 520_000, fresh: true, known: true } });
+  // One cap for both blocks, so there is one rule to explain: the short block
+  // pays about 70 tokens for a done-when at the cap instead of 20 for a
+  // clipped one.
+  assert.ok(tokens(text) <= 230, `${tokens(text)} tokens, ${text.length} chars`);
+  assert.match(text, /ask nothing and offer nothing/);
+});
+
+test("a decimal in a done-when is not a checklist boundary", () => {
+  assert.deepEqual(splitChecks("uptime hits 99. 9 percent and the job runs"), ["uptime hits 99. 9 percent and the job runs"]);
+  assert.deepEqual(splitChecks("1. the job runs green 2. the email is sent"), ["1. the job runs green", "2. the email is sent"]);
+});
+
+test("the statuses that end a pin are all real statuses", () => {
+  for (const s of UNPIN_STATUSES) assert.ok(STATUSES.includes(s), `${s} is not a status`);
+});
+
+test("the unpin notice fires on the statuses that end a pin and on nothing else", () => {
+  const reg = parseRegister("Mission: m\n\n## P1. Nightly job\n- status: active\n- thread: topic:1\n- done when: x\n- pin: 4211\n");
+  const [p1] = reg.problems;
+  assert.equal(pinOf(p1), "4211");
+  for (const status of ["done", "dropped", "parked"]) {
+    const notice = unpinAfter(p1, { status });
+    assert.equal(notice.messageId, "4211");
+    assert.equal(notice.thread, "topic:1");
+    assert.match(notice.text, /unpin/);
+    assert.match(notice.text, /tell the operator/);
+  }
+  for (const status of ["active", "blocked", "paused", "proposed"]) {
+    assert.equal(unpinAfter(p1, { status }), null, `${status} should leave the pin alone`);
+  }
+  const noPin = parseRegister("Mission: m\n\n## P2. No pin\n- status: active\n- thread: topic:1\n- done when: x\n").problems[0];
+  assert.equal(unpinAfter(noPin, { status: "done" }), null);
+});
+
+test("stalePins lists the ended problems whose pin is still up", () => {
+  const reg = parseRegister(
+    "Mission: m\n\n## P1. Closed with a pin\n- status: done\n- thread: topic:1\n- pin: 4211\n\n## P2. Closed cleanly\n- status: done\n- thread: topic:1\n\n## P3. Still going\n- status: active\n- thread: topic:2\n- done when: x\n- pin: 4212\n",
+  );
+  assert.deepEqual(stalePins(reg).map((p) => p.id), ["P1"]);
+  assert.equal(stalePins(reg)[0].messageId, "4211");
 });

@@ -14,6 +14,7 @@ import { readFile, writeFile, readdir, mkdir, rename, access } from "node:fs/pro
 import path from "node:path";
 import process from "node:process";
 import { parseRegister, lintRegister, threadsOverlap, STATUSES } from "../lib/register.js";
+import { unpinAfter, stalePins } from "../lib/pin.js";
 import { setFields } from "../lib/edit.js";
 import { today } from "../lib/gauge.js";
 import { registerPath, ledgerPath, snapshotPath, turnsPath, turnPath, turnDir, agentIdError, DEFAULT_REGISTER_FILE } from "../lib/paths.js";
@@ -42,7 +43,7 @@ import {
   overlayChoices, pickOverlay, openclawDefaultAgent, cliAgentFor,
 } from "../lib/install.js";
 import { settingsDir, runtimeConfig, readSettings } from "../lib/settings.js";
-import { packageRoot } from "../lib/self.js";
+import { packageRoot, apsSetCommand } from "../lib/self.js";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import { createInterface } from "node:readline/promises";
@@ -261,20 +262,43 @@ async function cmdSet() {
       for (const e of diffSnapshots(beforeSnap, afterSnap)) push(e, "aps");
       await appendLedger(ledgerPath(overlay, agent), rows);
       await writeSnapshot(snapFile, afterSnap);
-      return rows;
+      // A close, a drop or a park leaves this problem's pinned message up. The
+      // status change is half the job; the unpin is the other half, and the
+      // agent only learns about it if this command says so (R24).
+      // Quiet only when this call clears the pin, which means the message is
+      // already down. A call that writes a *new* id still leaves the old
+      // message pinned, so it gets the notice.
+      const clearing = fields.pin !== undefined && !String(fields.pin).trim();
+      const pin = clearing
+        ? null
+        : unpinAfter(target, {
+            status,
+            command: apsSetCommand({
+              id: target.id,
+              assignment: "pin=",
+              overlay,
+              agentId: agent,
+              registerFile: registerFile(),
+              thread: markerThread,
+              sessionKey: markerSession,
+            }),
+          });
+      return { rows, pin };
     });
   } catch (err) {
     if (err instanceof UserError) die(err.message);
     throw err;
   }
   if (result === BUSY) die("another aps set or hook run holds the lock; try again");
+  const { rows, pin } = result;
 
   if (has("json")) {
-    console.log(JSON.stringify({ agent, id: id.toUpperCase(), actor, logged: result }, null, 2));
+    console.log(JSON.stringify({ agent, id: id.toUpperCase(), actor, logged: rows, unpin: pin }, null, 2));
     return;
   }
-  for (const e of result) console.log(`${e.problem} ${e.kind}${e.outcome ? ` (${e.outcome})` : ""}${e.flag ? ` — flagged: ${e.flag}` : ""}`);
-  if (!result.length) console.log("fields updated; no status or question changed");
+  for (const e of rows) console.log(`${e.problem} ${e.kind}${e.outcome ? ` (${e.outcome})` : ""}${e.flag ? ` — flagged: ${e.flag}` : ""}`);
+  if (!rows.length) console.log("fields updated; no status or question changed");
+  if (pin) console.log(pin.text);
 }
 
 // --------------------------------------------------------------- aps lint
@@ -364,7 +388,7 @@ async function reportOne(overlay, agent, { staleDays, hours }) {
     largestSession: sessions[0] ?? null,
     turns: { ...totals, days: days.length, shareAboveWarn: totals.person ? Math.round((totals.aboveWarn / totals.person) * 100) : null },
     flagged,
-    pins: { checked: false, reason: "the pin adapter is not deployed yet" },
+    pins: { checked: Boolean(register), stale: register ? stalePins(register) : [] },
   };
 }
 
@@ -392,7 +416,8 @@ async function cmdReport() {
     console.log(`  largest live session: ${s ? `${s.session} ${Math.round(s.tokens / 1000)}k${s.fresh ? "" : " (last known)"}` : "none in the window"}`);
     console.log(`  turns over ${r.turns.days} day(s): ${r.turns.person} from the operator, ${r.turns.automated} automated, ${r.turns.shareAboveWarn ?? "–"}% of theirs above the warning level`);
     if (r.flagged.length) console.log(`  flagged: ${r.flagged.map((e) => `${e.day} ${e.problem} ${e.kind} — ${e.flag}`).join("; ")}`);
-    if (!r.pins.checked) console.log(`  pins: not checked (${r.pins.reason})`);
+    if (!r.pins.checked) console.log("  pins: not checked (the register could not be read)");
+    else if (r.pins.stale.length) console.log(`  still pinned after the problem ended: ${r.pins.stale.map((p) => `${p.id} message ${p.messageId}${p.thread ? ` in ${p.thread}` : ""} (${p.status})`).join("; ")}`);
   }
 }
 

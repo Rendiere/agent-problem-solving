@@ -22,16 +22,44 @@ writes nothing down.
 
 > **Agent:** Not yet, and finding out will take more than one reply, so I'd like to write it down first.
 >
-> P1. Find out why sign-ups fell
-> - problem: sign-ups fell about 30% last month and nobody knows why
-> - done when: we can name the step where the missing sign-ups drop out, with numbers from both months
-> - rules out: changes to the sign-up flow until we know the cause
+> 🎯 **Problem**
+> > _Sign-ups fell about 30% last month and nobody knows why._
+>
+> 🧭 **Serves**
+> Restore sign-up conversion.
+>
+> ✅ **Done when**
+> - [ ] Name the step where the missing sign-ups drop out.
+> - [ ] Compare that step with numbers from both months.
+>
+> 🚧 **Out of scope**
+> Changes to the sign-up flow until we know the cause.
+>
+> 💡 **Approach**
+> Compare the funnel step by step, starting with the largest loss.
 >
 > 1. Approve
 > 2. Reword
 > 3. Not now
 
 > **You:** 1
+
+> **Agent:** 📌 **Registered**
+> > _P1 — Find out why sign-ups fell_
+>
+> I am committing to solve this problem in this topic.
+>
+> 🎯 **Problem**
+> > _Sign-ups fell about 30% last month and nobody knows why._
+>
+> ✅ **Done when**
+> - [ ] Name the step where the missing sign-ups drop out.
+> - [ ] Compare that step with numbers from both months.
+>
+> 🚧 **Out of scope**
+> Changes to the sign-up flow until we know the cause.
+>
+> Pinned in this topic.
 
 Half an hour later you ask for something unrelated:
 
@@ -61,8 +89,9 @@ the problem is stored in a file that every new session reads.
    writing it down as a problem.
 2. The agent drafts the problem: what is wrong, and a check anyone could run to
    prove it fixed. It waits for you.
-3. You approve it, and it becomes the active problem. Each project or chat
-   thread has one active problem at a time.
+3. You approve it, and it becomes the active problem. In OpenClaw Telegram,
+   the agent sends a registered message and pins it in the topic. Each project
+   or chat thread has one active problem at a time.
 4. Before every reply, the agent sees the active problem and its check. If the
    conversation drifts, or you push back twice, it stops and asks whether to go
    back, reword the problem, or park it.

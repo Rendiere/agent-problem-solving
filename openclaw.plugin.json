@@ -2,7 +2,7 @@
   "id": "agent-problem-solving",
   "name": "Agent Problem Solving",
   "description": "One plugin bundling the method skills, a per-turn hook and the aps command: one named problem per chat thread, the register and a context gauge in front of the agent on every turn, every change in an append-only decision log.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "activation": {
     "onStartup": true
   },

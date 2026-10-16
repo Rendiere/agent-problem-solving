@@ -1,6 +1,6 @@
 {
   "name": "agent-problem-solving",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "One plugin bundling the method skills, a per-turn hook and the aps command, to keep each chat thread on one named problem.",
   "license": "MIT",

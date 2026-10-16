@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agent-problem-solving",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Keeps you and the agent on one named problem at a time, with that problem re-read before every reply.",
   "repository": "https://github.com/Rendiere/agent-problem-solving",
   "license": "MIT",

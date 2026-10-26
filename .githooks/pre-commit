@@ -75,7 +75,9 @@ def chain_displaced_hooks():
     candidates.append(configured.strip())
     common = (git("rev-parse", "--git-common-dir") or ".git").strip()
     candidates.append(os.path.join(common, "hooks", "pre-commit"))
-    candidates.append(os.path.join(".husky", "pre-commit"))
+    # Hook directories other tools own, so this hook travels without extra config.
+    for known in (".husky", ".beads/hooks", "scripts/hooks", ".config/hooks"):
+        candidates.append(os.path.join(known, "pre-commit"))
     me = os.path.realpath(__file__)
     seen = {me}
     env = dict(os.environ, **{CHAIN_GUARD: "1"})

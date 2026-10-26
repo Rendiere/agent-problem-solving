@@ -19,6 +19,7 @@ BYTES_PER_TOKEN = 4
 BYTE_LIMIT = TOKEN_LIMIT * BYTES_PER_TOKEN
 SPLIT_TARGET = int(TOKEN_LIMIT * 0.8)
 CHAIN_GUARD = "TOKEN_LIMIT_HOOK_RUNNING"
+DONE_GUARD = "TOKEN_LIMIT_HOOK_DONE"
 VERBOSE = os.environ.get("TOKEN_LIMIT_HOOK_VERBOSE") == "1"
 
 LOCKFILES = {
@@ -80,7 +81,7 @@ def chain_displaced_hooks():
         candidates.append(os.path.join(known, "pre-commit"))
     me = os.path.realpath(__file__)
     seen = {me}
-    env = dict(os.environ, **{CHAIN_GUARD: "1"})
+    env = dict(os.environ, **{CHAIN_GUARD: "1", DONE_GUARD: "1"})
     for candidate in candidates:
         if not candidate:
             continue
@@ -260,6 +261,9 @@ def report(offenders):
 
 
 def main():
+    if os.environ.get(DONE_GUARD) == "1":
+        # An outer copy of this hook already measured the staged files.
+        return 0
     chain_displaced_hooks()
     if os.path.exists(os.path.join((git("rev-parse", "--git-dir") or ".git").strip(), "MERGE_HEAD")):
         if VERBOSE:

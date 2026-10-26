@@ -15,9 +15,13 @@ const DAY = today();
 // depend on which sessions this machine happens to be running.
 const STATE = mkdtempSync(path.join(tmpdir(), "aps-state-"));
 
+const BARE_CONFIG = mkdtempSync(path.join(tmpdir(), "aps-bare-cfg-"));
+
 function aps(args, env = {}) {
   return new Promise((resolve) => {
-    execFile(process.execPath, [APS, ...args], { env: { ...process.env, OPENCLAW_STATE_DIR: STATE, ...env } }, (err, stdout, stderr) => {
+    // On a machine with a real install, ~/.config/aps holds a real overlay, and
+    // a test that means "nothing is set up" would read that one instead.
+    execFile(process.execPath, [APS, ...args], { env: { ...process.env, APS_CONFIG_HOME: BARE_CONFIG, OPENCLAW_STATE_DIR: STATE, ...env } }, (err, stdout, stderr) => {
       resolve({ code: err?.code ?? 0, stdout, stderr });
     });
   });

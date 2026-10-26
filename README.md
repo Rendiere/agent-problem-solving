@@ -79,6 +79,21 @@ When the check passes, the agent shows you the evidence and asks before it
 calls the problem done. Tomorrow's session opens on the same problem, because
 the problem is stored in a file that every new session reads.
 
+Once a day, the first time you say anything in that chat, the agent looks at the
+problem again on its own. It reads the done-when against what it can already
+see: the register, the recent messages, the branch or the pull request. If it
+reads as met, or the problem has stopped mattering, it says so and asks:
+
+> **Agent:** P1's done-when reads as met. The drop-off is at email confirmation,
+> and both months are in the table I sent you on Thursday.
+>
+> 1. Done
+> 2. Drop
+> 3. Keep open
+
+If the problem is clearly still open, it says nothing and gets on with the work,
+so the daily look never turns into a daily nag. Nothing closes without your yes.
+
 ## How a problem moves
 
 ![How a problem moves, from the problem you bring to done, parked or dropped](docs/problem-loop.svg)
@@ -95,7 +110,9 @@ the problem is stored in a file that every new session reads.
 4. Before every reply, the agent sees the active problem and its check. If the
    conversation drifts, or you push back twice, it stops and asks whether to go
    back, reword the problem, or park it.
-5. The problem ends one of three ways. Done: the check passed, you confirmed,
+5. Once a day the agent checks the active problem off its own back, so a
+   problem that is finished does not stay pinned for weeks.
+6. The problem ends one of three ways. Done: the check passed, you confirmed,
    and the agent saved one line on what it learned. Parked: its state is
    written down, and it comes back when you return to it. Dropped: you called
    it off.

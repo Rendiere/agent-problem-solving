@@ -8,6 +8,7 @@ of every change:
 ```
 <folder>/agents/default/PROBLEMS.md       the problems
 <folder>/agents/default/decisions.jsonl   every change, appended, never edited
+<folder>/state/default.checks.json        problems already close-checked today
 <folder>/denylist.txt                     optional: names that must never reach this repository
 ```
 
@@ -30,6 +31,38 @@ aps install --status                                  # what is installed where
 ```
 
 `aps set` refuses a second active problem in one thread.
+
+## The once-a-day close-check
+
+A problem that is finished but still active sits at the top of a chat for weeks.
+So once a day the reminder carries one extra line, naming the thread's active
+problem and asking the agent to hold its done-when against evidence it can
+already see. If that reads as met, or the problem has stopped mattering, the
+agent runs the close-problem skill in that thread and asks the operator: done,
+drop, or keep open. If it is clearly still open the agent says nothing. Nothing
+moves to `done` or `dropped` without the operator's yes, same as before.
+
+There is no cron and no scheduler. The line rides on the first turn of the day
+in each thread, which is the same mechanism on every runtime the plugin
+supports, and it needs nothing set up beyond the install. The day the check went
+out is claimed per problem in `state/<agent>.checks.json`, which holds today's
+marks and yesterday's and no history. Per problem, not per thread: a problem
+that names several threads is asked about once a day, in whichever of them is
+used first.
+
+The check is skipped when:
+
+- the turn is automated — a heartbeat or a sub-agent report has nobody to answer
+- a question is already pending on the entry
+- the operator confirmed the problem active that same day
+- the entry has no `done when` to check against, which `aps lint` reports instead
+- the operator answered "keep open" within the last week, recorded as a
+  `keep open: <date>` line on the entry — the same answer on the same evidence
+  tomorrow is the daily nag the check exists not to be
+
+A thread nobody opens is never checked, by design: the check rides on use. Those
+surface in `aps report`, which lists what has been active and untouched for a
+week.
 
 ## Session size
 

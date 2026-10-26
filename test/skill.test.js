@@ -21,3 +21,45 @@ test("approval registers before a required delivery pin", () => {
   assert.match(skill, /The problem is registered, but pinning failed:/);
   assert.match(skill, /Never claim it is pinned without a successful tool result/);
 });
+
+const closeSkill = readFileSync(new URL("../skills/close-problem/SKILL.md", import.meta.url), "utf8");
+
+test("the close-problem skill covers the once-a-day check", () => {
+  // Raised by the reminder, so the skill has to say what to do when it arrives.
+  assert.match(closeSkill, /Close-check/);
+  // Evidence the agent can reach without the operator doing anything.
+  for (const source of ["register", "thread", "repository"]) {
+    assert.match(closeSkill, new RegExp(source, "i"), `no mention of ${source}`);
+  }
+  // Drop covers a problem that stopped mattering, which is not the same as done.
+  assert.match(closeSkill, /1\. Done 2\. Drop 3\. Keep open/);
+  assert.match(closeSkill, /status=dropped/);
+  assert.match(closeSkill, /no longer/i);
+  // Still open is a silent outcome: the daily check must not become a daily nag.
+  assert.match(closeSkill, /say nothing/i);
+});
+
+test("the close-problem skill never closes a problem on its own", () => {
+  assert.match(closeSkill, /--confirmed/);
+  assert.match(closeSkill, /without their yes|only the operator|Nothing closes/i);
+});
+
+// The reminder line promises the operator three options. A skill that then
+// offers two makes a liar of the line the agent was reading a moment ago.
+test("the skill asks the same three options the reminder promises", () => {
+  // An option set is offered inline, several numbers on one line; the skill's
+  // own steps are a numbered list, one number per line.
+  const offers = (closeSkill.match(/^.*\b1\..*\b2\..*$/gm) ?? []);
+  assert.ok(offers.length >= 2, `only ${offers.length} option sets in the skill`);
+  for (const offer of offers) {
+    assert.match(offer, /1\. Done 2\. Drop 3\. Keep open/, `a different option set: ${offer.trim()}`);
+  }
+  assert.doesNotMatch(closeSkill, /Close and celebrate|Keep going/);
+});
+
+// "Keep open" is an answer, and an answer that leaves no trace gets asked
+// again tomorrow on the same evidence.
+test("the skill records a keep-open answer so it is not asked again tomorrow", () => {
+  assert.match(closeSkill, /keep open=/);
+  assert.match(closeSkill, /--clear-pending/);
+});

@@ -1,5 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import { threadFromSessionKey, degradedNotice } from "../../lib/register.js";
+import { closeCheckFor } from "../../lib/closecheck.js";
 import { readSession, gaugeLevel, today } from "../../lib/gauge.js";
 import { buildInjection } from "../../lib/inject.js";
 import { classifyTurn } from "../../lib/classify.js";
@@ -82,6 +83,7 @@ export default {
         const agentId = ctx.agentId;
         const file = registerPath(overlay, agentId, registerFile);
         let { register, notice } = await loadRegister(file);
+        let closeCheck = null;
         const command = apsCommand({ overlay, agentId, registerFile, thread: common.thread, sessionKey: ctx?.sessionKey });
 
         // An agent with no register has not been rolled out yet: tell it how to
@@ -114,9 +116,13 @@ export default {
             // A log or a counter that cannot be written must not cost the agent
             // its reminder.
           }
+          // Once a day, ask the agent to check this thread's problem off. The
+          // day is claimed before the block goes out, so a check the agent
+          // never acts on costs one question and not every turn of the day.
+          closeCheck = await closeCheckFor({ overlay, agentId, register, thread: common.thread, date, actor, waitMs: LOCK_WAIT_MS });
         }
 
-        return deliver(register, { notice, registerPath: file, apsCommand: command });
+        return deliver(register, { notice, registerPath: file, closeCheck, apsCommand: command });
       },
       { priority: 10, timeoutMs: 8000 },
     );

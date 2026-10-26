@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -30,6 +30,7 @@ function pair(name = "project", { agent = "a", edit = (s) => s } = {}) {
 function overlay(text = ACTIVE, agent = "a") {
   const dir = mkdtempSync(path.join(tmpdir(), "aps-cli-"));
   mkdirSync(path.join(dir, "agents", agent), { recursive: true });
+  mkdirSync(path.join(dir, "state"), { recursive: true });
   if (text !== null) writeFileSync(path.join(dir, "agents", agent, "PROBLEMS.md"), text);
   return dir;
 }
@@ -44,11 +45,16 @@ function project(name = "project") {
 // The suite itself runs inside an agent, so the ambient environment already
 // says "automated" and "OpenClaw owns this turn". Each test states what it
 // wants instead of inheriting the one it happens to run under.
-const BARE = Object.fromEntries(
-  Object.keys(process.env)
-    .filter((k) => /^(APS_|CLAUDE_CODE_|OPENCLAW_)/.test(k))
-    .map((k) => [k, ""]),
-);
+const BARE = {
+  ...Object.fromEntries(
+    Object.keys(process.env)
+      .filter((k) => /^(APS_|CLAUDE_CODE_|OPENCLAW_)/.test(k))
+      .map((k) => [k, ""]),
+  ),
+  // On a machine with a real install, ~/.config/aps holds a real overlay, and
+  // a test that means "nothing is set up" would read that one instead.
+  APS_CONFIG_HOME: mkdtempSync(path.join(tmpdir(), "aps-bare-cfg-")),
+};
 
 const INTERACTIVE = { CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_CODE_SESSION_ATTENDED: "1" };
 
@@ -343,4 +349,39 @@ test("a home-relative thread is written with a tilde, so it is readable and port
   const home = mkdtempSync(path.join(tmpdir(), "aps-home-"));
   mkdirSync(path.join(home, "code", "website"), { recursive: true });
   assert.equal(threadForCli(path.join(home, "code", "website"), { HOME: home }), "dir:~/code/website");
+});
+
+// A problem the operator approved today is not asked about on the same day.
+const OPEN_A_WHILE = { edit: (text) => text.replace(`- confirmed: ${DAY} active`, "- confirmed: 2026-01-01 active") };
+
+test("the first turn of the day asks the agent to check the problem off, and only the first", () => {
+  const { cwd, dir } = pair("close-check", OPEN_A_WHILE);
+  const env = { APS_OVERLAY: dir, APS_AGENT: "a" };
+  const first = run(claudeEvent(cwd), env);
+  assert.equal(first.code, 0, first.stderr);
+  assert.match(context(first.stdout), /Close-check on P1/);
+  assert.match(context(first.stdout), /1\. Done 2\. Drop 3\. Keep open/);
+  // A second turn the same day must not ask again. Assert the block is there
+  // first: an empty output would pass "no close-check" for the wrong reason.
+  const second = context(run({ ...claudeEvent(cwd), prompt: "and now the other thing" }, env).stdout);
+  assert.match(second, /\[problem register\]/);
+  assert.doesNotMatch(second, /Close-check/);
+});
+
+test("yesterday's check does not silence today's", () => {
+  const { cwd, dir } = pair("close-check-day", OPEN_A_WHILE);
+  writeFileSync(
+    path.join(dir, "state", "a.checks.json"),
+    JSON.stringify({ P1: "2001-01-01" }),
+    { flag: "w" },
+  );
+  assert.match(context(run(claudeEvent(cwd), { APS_OVERLAY: dir, APS_AGENT: "a" }).stdout), /Close-check on P1/);
+});
+
+test("an automated turn is never asked to check a problem off", () => {
+  const { cwd, dir } = pair("close-check-auto", OPEN_A_WHILE);
+  const r = run(claudeEvent(cwd), { APS_OVERLAY: dir, APS_AGENT: "a", CLAUDE_CODE_SESSION_ATTENDED: "0", CLAUDE_CODE_ENTRYPOINT: "" });
+  assert.match(context(r.stdout), /\[problem register\]/);
+  assert.doesNotMatch(context(r.stdout), /Close-check/);
+  assert.ok(!existsSync(path.join(dir, "state", "a.checks.json")), "an automated turn claims nothing");
 });

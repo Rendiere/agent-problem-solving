@@ -13,6 +13,7 @@
 
 import { buildInjection } from "../lib/inject.js";
 import { degradedNotice } from "../lib/register.js";
+import { closeCheckFor } from "../lib/closecheck.js";
 import { today } from "../lib/gauge.js";
 import {
   resolveOverlay, checkOverlay, registerPath, ledgerPath, snapshotPath,
@@ -91,6 +92,7 @@ async function main() {
   const file = registerPath(overlay, agentId, registerFile);
   let { register, notice } = await loadRegister(file);
   let reading;
+  let closeCheck = null;
   if (register) {
     try {
       const markerFile = turnPath(overlay, agentId, thread, event.session_id ?? null);
@@ -115,6 +117,10 @@ async function main() {
     } catch {
       // Logging and counters are useful evidence, but never worth losing the reminder.
     }
+    // Once a day, ask the agent to check this thread's problem off. The day is
+    // claimed before the block goes out, so a check the agent never acts on
+    // costs one question and not every turn of the day.
+    closeCheck = await closeCheckFor({ overlay, agentId, register, thread, date, actor, waitMs: LOCK_WAIT_MS });
   }
   emit(
     buildInjection(register, {
@@ -123,6 +129,7 @@ async function main() {
       notice,
       registerFile,
       registerPath: file,
+      closeCheck,
       apsCommand: apsCommand({ overlay, agentId, registerFile, thread, sessionKey: event.session_id ?? null }),
     }),
   );

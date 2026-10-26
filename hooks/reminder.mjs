@@ -12,12 +12,12 @@
 // one-line notice, because silence there would read as "no problem active".
 
 import { buildInjection } from "../lib/inject.js";
-import { degradedNotice, selectForThread } from "../lib/register.js";
-import { checkDue, readChecks, markChecked } from "../lib/closecheck.js";
+import { degradedNotice } from "../lib/register.js";
+import { closeCheckFor } from "../lib/closecheck.js";
 import { today } from "../lib/gauge.js";
 import {
   resolveOverlay, checkOverlay, registerPath, ledgerPath, snapshotPath,
-  turnsPath, turnPath, checksPath, loadRegister, DEFAULT_REGISTER_FILE,
+  turnsPath, turnPath, loadRegister, DEFAULT_REGISTER_FILE,
 } from "../lib/paths.js";
 import { runtimeConfig } from "../lib/settings.js";
 import { claimTurn } from "../lib/settings.js";
@@ -117,16 +117,10 @@ async function main() {
     } catch {
       // Logging and counters are useful evidence, but never worth losing the reminder.
     }
-    try {
-      // Once a day, ask the agent to check this thread's problem off. Marked
-      // before the block goes out, so a reply the agent never acts on still
-      // costs one check and not every turn of the day.
-      const checksFile = checksPath(overlay, agentId);
-      closeCheck = checkDue(selectForThread(register, thread), { date, checked: await readChecks(checksFile), actor });
-      if (closeCheck) await markChecked(checksFile, closeCheck.id, date, { waitMs: LOCK_WAIT_MS });
-    } catch {
-      closeCheck = null;
-    }
+    // Once a day, ask the agent to check this thread's problem off. The day is
+    // claimed before the block goes out, so a check the agent never acts on
+    // costs one question and not every turn of the day.
+    closeCheck = await closeCheckFor({ overlay, agentId, register, thread, date, actor, waitMs: LOCK_WAIT_MS });
   }
   emit(
     buildInjection(register, {

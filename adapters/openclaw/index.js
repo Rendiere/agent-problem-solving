@@ -1,6 +1,6 @@
 import { appendFile } from "node:fs/promises";
-import { threadFromSessionKey, degradedNotice, selectForThread } from "../../lib/register.js";
-import { checkDue, readChecks, markChecked } from "../../lib/closecheck.js";
+import { threadFromSessionKey, degradedNotice } from "../../lib/register.js";
+import { closeCheckFor } from "../../lib/closecheck.js";
 import { readSession, gaugeLevel, today } from "../../lib/gauge.js";
 import { buildInjection } from "../../lib/inject.js";
 import { classifyTurn } from "../../lib/classify.js";
@@ -13,7 +13,6 @@ import {
   snapshotPath,
   turnsPath,
   turnPath,
-  checksPath,
   loadRegister,
   DEFAULT_REGISTER_FILE,
 } from "../../lib/paths.js";
@@ -117,16 +116,10 @@ export default {
             // A log or a counter that cannot be written must not cost the agent
             // its reminder.
           }
-          try {
-            // Once a day, ask the agent to check this thread's problem off.
-            // Marked before the block goes out, so a reply the agent never acts
-            // on costs one check rather than every turn of the day.
-            const checksFile = checksPath(overlay, agentId);
-            closeCheck = checkDue(selectForThread(register, common.thread), { date, checked: await readChecks(checksFile), actor });
-            if (closeCheck) await markChecked(checksFile, closeCheck.id, date, { waitMs: LOCK_WAIT_MS });
-          } catch {
-            closeCheck = null;
-          }
+          // Once a day, ask the agent to check this thread's problem off. The
+          // day is claimed before the block goes out, so a check the agent
+          // never acts on costs one question and not every turn of the day.
+          closeCheck = await closeCheckFor({ overlay, agentId, register, thread: common.thread, date, actor, waitMs: LOCK_WAIT_MS });
         }
 
         return deliver(register, { notice, registerPath: file, closeCheck, apsCommand: command });

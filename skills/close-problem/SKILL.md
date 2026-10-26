@@ -7,8 +7,11 @@ description: Use when the work on an active problem looks finished, or when the 
 
 1. **Check `done when` against evidence**: run the query, take the screenshot, find the sent email. Your belief that it is done is not evidence.
 2. **If it does not pass**, say what is missing and keep working. Do not reword `done when` to fit what was built; that is a reframe and it needs the operator.
-3. **If it passes**, send the evidence in one short message and ask: 1. Close and celebrate 2. Keep going, with number-only buttons. Write `pending: close <date>` on the entry.
-4. **On a yes**, use the complete `Change it:` command from the reminder to set `<ID> status=done learned="…" --confirmed --clear-pending`. One line on the result, one line on what you would do differently. The command hands a side task's thread back to its parent; name the parent and its next step.
+3. **If it passes**, send the evidence in one short message and ask: 1. Done 2. Drop 3. Keep open, with number-only buttons. Write `pending: close <date>` on the entry. The same three options every time, whether you got here on your own or off the once-a-day check.
+4. **On their answer**, use the complete `Change it:` command from the reminder:
+   - **Done**: `<ID> status=done learned="…" --confirmed --clear-pending`. One line on the result, one line on what you would do differently. The command hands a side task's thread back to its parent; name the parent and its next step.
+   - **Drop**: `<ID> status=dropped learned="…" --confirmed --clear-pending`. One line on why it stopped mattering.
+   - **Keep open**: `<ID> "keep open=<date>" state="…" --clear-pending`, with today's date. They have read the evidence and said it is not done, so the check goes quiet on this problem for a week rather than asking again tomorrow on the same evidence. Say in one line what is still missing, and carry on.
 5. **Offer the next one.** Name the last parked problem or the most important proposed one and ask which to pick up. If the context gauge is past its warning level, this is the moment to offer a reset.
 
 Keep done entries in the register for a week, then move them to `PROBLEMS-archive.md`.
@@ -29,11 +32,11 @@ nothing the operator has to fetch for you:
 
 Then one of three things happens.
 
-- **It reads as met.** Go to step 1 above and check it properly. The daily check
-  is a prompt to look, not evidence on its own.
+- **It reads as met.** Go to step 1 above and check it properly, then ask as
+  step 3 says. The daily check is a prompt to look, not evidence on its own.
 - **It no longer matters**: the thing it was for is gone, or the operator moved
-  on. Say so in one line, with why, and ask: 1. Done 2. Drop 3. Keep open.
-  On a drop, `<ID> status=dropped learned="…" --confirmed --clear-pending`.
+  on. Say so in one line, with why, and ask the same three:
+  1. Done 2. Drop 3. Keep open.
 - **It is clearly still open.** Say nothing about it and get on with the work. A
   daily check that comments every day is a daily nag.
 
@@ -42,7 +45,8 @@ question survives a new session. Nothing closes without their yes: never set
 `status=done` or `status=dropped` without `--confirmed` and an answer to point
 at.
 
-The reminder raises the check on the first turn of the day in each thread, so
-each thread's own problem gets looked at on a day it sees any use. A thread
+The reminder raises the check on the first turn of the day, once per problem,
+so each thread's own problem gets looked at on a day it sees any use. A thread
 nobody opens goes quiet instead; `aps report` lists what has been active and
-untouched for a week, which is where those surface.
+untouched for a week, which is where those surface. Parked problems are not
+checked: the operator parked them, and `aps report` is where they come back.

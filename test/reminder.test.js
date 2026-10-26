@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -361,8 +361,11 @@ test("the first turn of the day asks the agent to check the problem off, and onl
   assert.equal(first.code, 0, first.stderr);
   assert.match(context(first.stdout), /Close-check on P1/);
   assert.match(context(first.stdout), /1\. Done 2\. Drop 3\. Keep open/);
-  // A second turn the same day must not ask again.
-  assert.doesNotMatch(context(run({ ...claudeEvent(cwd), prompt: "and now the other thing" }, env).stdout), /Close-check/);
+  // A second turn the same day must not ask again. Assert the block is there
+  // first: an empty output would pass "no close-check" for the wrong reason.
+  const second = context(run({ ...claudeEvent(cwd), prompt: "and now the other thing" }, env).stdout);
+  assert.match(second, /\[problem register\]/);
+  assert.doesNotMatch(second, /Close-check/);
 });
 
 test("yesterday's check does not silence today's", () => {
@@ -378,5 +381,7 @@ test("yesterday's check does not silence today's", () => {
 test("an automated turn is never asked to check a problem off", () => {
   const { cwd, dir } = pair("close-check-auto", OPEN_A_WHILE);
   const r = run(claudeEvent(cwd), { APS_OVERLAY: dir, APS_AGENT: "a", CLAUDE_CODE_SESSION_ATTENDED: "0", CLAUDE_CODE_ENTRYPOINT: "" });
+  assert.match(context(r.stdout), /\[problem register\]/);
   assert.doesNotMatch(context(r.stdout), /Close-check/);
+  assert.ok(!existsSync(path.join(dir, "state", "a.checks.json")), "an automated turn claims nothing");
 });

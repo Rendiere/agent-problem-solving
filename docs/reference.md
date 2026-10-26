@@ -45,8 +45,10 @@ moves to `done` or `dropped` without the operator's yes, same as before.
 There is no cron and no scheduler. The line rides on the first turn of the day
 in each thread, which is the same mechanism on every runtime the plugin
 supports, and it needs nothing set up beyond the install. The day the check went
-out is recorded per problem in `state/<agent>.checks.json`, which holds one
-day's marks and no history.
+out is claimed per problem in `state/<agent>.checks.json`, which holds today's
+marks and yesterday's and no history. Per problem, not per thread: a problem
+that names several threads is asked about once a day, in whichever of them is
+used first.
 
 The check is skipped when:
 
@@ -54,6 +56,9 @@ The check is skipped when:
 - a question is already pending on the entry
 - the operator confirmed the problem active that same day
 - the entry has no `done when` to check against, which `aps lint` reports instead
+- the operator answered "keep open" within the last week, recorded as a
+  `keep open: <date>` line on the entry — the same answer on the same evidence
+  tomorrow is the daily nag the check exists not to be
 
 A thread nobody opens is never checked, by design: the check rides on use. Those
 surface in `aps report`, which lists what has been active and untouched for a

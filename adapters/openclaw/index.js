@@ -1,5 +1,6 @@
 import { appendFile } from "node:fs/promises";
-import { threadFromSessionKey, degradedNotice } from "../../lib/register.js";
+import { threadFromSessionKey, degradedNotice, selectForThread } from "../../lib/register.js";
+import { checkDue, readChecks, markChecked } from "../../lib/closecheck.js";
 import { readSession, gaugeLevel, today } from "../../lib/gauge.js";
 import { buildInjection } from "../../lib/inject.js";
 import { classifyTurn } from "../../lib/classify.js";
@@ -12,6 +13,7 @@ import {
   snapshotPath,
   turnsPath,
   turnPath,
+  checksPath,
   loadRegister,
   DEFAULT_REGISTER_FILE,
 } from "../../lib/paths.js";
@@ -82,6 +84,7 @@ export default {
         const agentId = ctx.agentId;
         const file = registerPath(overlay, agentId, registerFile);
         let { register, notice } = await loadRegister(file);
+        let closeCheck = null;
         const command = apsCommand({ overlay, agentId, registerFile, thread: common.thread, sessionKey: ctx?.sessionKey });
 
         // An agent with no register has not been rolled out yet: tell it how to
@@ -114,9 +117,19 @@ export default {
             // A log or a counter that cannot be written must not cost the agent
             // its reminder.
           }
+          try {
+            // Once a day, ask the agent to check this thread's problem off.
+            // Marked before the block goes out, so a reply the agent never acts
+            // on costs one check rather than every turn of the day.
+            const checksFile = checksPath(overlay, agentId);
+            closeCheck = checkDue(selectForThread(register, common.thread), { date, checked: await readChecks(checksFile), actor });
+            if (closeCheck) await markChecked(checksFile, closeCheck.id, date, { waitMs: LOCK_WAIT_MS });
+          } catch {
+            closeCheck = null;
+          }
         }
 
-        return deliver(register, { notice, registerPath: file, apsCommand: command });
+        return deliver(register, { notice, registerPath: file, closeCheck, apsCommand: command });
       },
       { priority: 10, timeoutMs: 8000 },
     );

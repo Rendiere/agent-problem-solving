@@ -12,11 +12,12 @@
 // one-line notice, because silence there would read as "no problem active".
 
 import { buildInjection } from "../lib/inject.js";
-import { degradedNotice } from "../lib/register.js";
+import { degradedNotice, selectForThread } from "../lib/register.js";
+import { checkDue, readChecks, markChecked } from "../lib/closecheck.js";
 import { today } from "../lib/gauge.js";
 import {
   resolveOverlay, checkOverlay, registerPath, ledgerPath, snapshotPath,
-  turnsPath, turnPath, loadRegister, DEFAULT_REGISTER_FILE,
+  turnsPath, turnPath, checksPath, loadRegister, DEFAULT_REGISTER_FILE,
 } from "../lib/paths.js";
 import { runtimeConfig } from "../lib/settings.js";
 import { claimTurn } from "../lib/settings.js";
@@ -91,6 +92,7 @@ async function main() {
   const file = registerPath(overlay, agentId, registerFile);
   let { register, notice } = await loadRegister(file);
   let reading;
+  let closeCheck = null;
   if (register) {
     try {
       const markerFile = turnPath(overlay, agentId, thread, event.session_id ?? null);
@@ -115,6 +117,16 @@ async function main() {
     } catch {
       // Logging and counters are useful evidence, but never worth losing the reminder.
     }
+    try {
+      // Once a day, ask the agent to check this thread's problem off. Marked
+      // before the block goes out, so a reply the agent never acts on still
+      // costs one check and not every turn of the day.
+      const checksFile = checksPath(overlay, agentId);
+      closeCheck = checkDue(selectForThread(register, thread), { date, checked: await readChecks(checksFile), actor });
+      if (closeCheck) await markChecked(checksFile, closeCheck.id, date, { waitMs: LOCK_WAIT_MS });
+    } catch {
+      closeCheck = null;
+    }
   }
   emit(
     buildInjection(register, {
@@ -123,6 +135,7 @@ async function main() {
       notice,
       registerFile,
       registerPath: file,
+      closeCheck,
       apsCommand: apsCommand({ overlay, agentId, registerFile, thread, sessionKey: event.session_id ?? null }),
     }),
   );

@@ -205,3 +205,23 @@ test("a hand edit made during an automated turn is attributed to that turn", asy
   assert.equal(rows[0].actor, "automated");
   assert.match(rows[0].flag, /automated turn/);
 });
+
+// The check runs the same way on OpenClaw: raised on the first turn of the day
+// in that topic, and not again until tomorrow.
+const OPEN_A_WHILE = ACTIVE.replace(`- confirmed: ${DAY} active`, "- confirmed: 2026-01-01 active");
+
+test("the first turn of the day in a topic carries the close-check, and the next does not", async () => {
+  const dir = overlay(OPEN_A_WHILE);
+  const hook = harness({ overlayPath: dir });
+  const turn = () => hook({ prompt: "what's next?", messages: [{ role: "user", content: "what's next?" }] }, personCtx(dir));
+  assert.match((await turn()).prependContext, /Close-check on P1/);
+  assert.doesNotMatch((await turn()).prependContext, /Close-check/);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(dir, "state", "a.checks.json"), "utf8")), { P1: DAY });
+});
+
+test("a heartbeat is never asked to check a problem off", async () => {
+  const dir = overlay(OPEN_A_WHILE);
+  const out = await harness({ overlayPath: dir })({ prompt: "heartbeat" }, { ...personCtx(dir), trigger: "heartbeat", senderId: undefined });
+  assert.doesNotMatch(out.prependContext, /Close-check/);
+  assert.ok(!existsSync(path.join(dir, "state", "a.checks.json")), "an automated turn marks nothing");
+});

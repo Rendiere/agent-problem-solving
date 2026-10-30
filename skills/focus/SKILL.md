@@ -36,6 +36,7 @@ Run `aps report` and answer in one short message: the parked problems with their
 - Restate an unanswered question after 24 hours, and a proposed entry after three days.
 - After a "stay", note the declined request in `state` and do not ask about it again.
 - Reset `pushbacks` and `corrections` to 0 on a park, a reframe or a close.
+- One pin per thread. A park, a close or a drop takes this problem's 📌 message down and clears its `pin:`; making a problem active again — a parked one picked back up, or a parent resumed by its side task closing — posts and pins a fresh message and records the new id with `set <ID> pin=<message id>`.
 - When a parent closes or is dropped with an open side task, ask once what happens to the side task.
 - A sub-agent you dispatch is not a side task: it is work on this problem.
 

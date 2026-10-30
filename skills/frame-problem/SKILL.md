@@ -67,6 +67,8 @@ Write the problem down before solving it. The order is what is wrong, the simple
 
    In an OpenClaw Telegram session, send it through the message tool to the current chat and topic with the current agent's `accountId` and `delivery: { pin: { enabled: true, required: true } }`. The required pin makes pin failure visible. After success, tell the operator: `Pinned in this topic.` If the call reports a pin failure, do not resend the registered message; say: `The problem is registered, but pinning failed: <plain reason>.` Never claim it is pinned without a successful tool result. Where the runtime has no delivery-pin capability, send the registered message and say that pinning is unavailable there.
 
+   **Write the pinned message's id down.** As soon as the send returns it, record it on the entry with `set <ID> pin=<message id>`. That id is what the close unpins; without it the pin stays up and the next registration leaves the thread with two.
+
 On "reword", edit the entry and ask again. On "not now", leave it `proposed` and clear the pending line.
 
 A thread holds one active problem. If a second one is needed here, ask which to park. Only the operator moves a problem to active, done or dropped.

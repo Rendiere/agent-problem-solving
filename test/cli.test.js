@@ -288,3 +288,97 @@ test("set refuses a change that would break a rule the register has to keep", as
   assert.match(r.stderr, /done when/);
   assert.match(readFileSync(path.join(dir, "agents", "a", "PROBLEMS.md"), "utf8"), /- status: proposed/);
 });
+
+// --------------------------------------------------------------- the pin
+
+const PINNED = `Mission: one line about the outcome\n\n${entry("P1", "First problem", {
+  status: "active",
+  thread: "topic:1",
+  "done when": "x",
+  pin: "4211",
+  confirmed: `${DAY} active`,
+  updated: DAY,
+})}`;
+
+test("closing a problem tells the agent to unpin its 📌 message and how to clear the field", async () => {
+  const dir = overlay({ a: PINNED });
+  const r = await aps(["set", "P1", "status=done", "learned=one line", "--agent", "a", "--confirmed"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /unpin: message 4211 in topic:1 is still pinned for P1/);
+  assert.match(r.stdout, /set P1 pin=/);
+  // The id stays on the entry until the unpin lands, so a failed unpin is still
+  // on the record rather than lost with the status change.
+  const text = readFileSync(path.join(dir, "agents", "a", "PROBLEMS.md"), "utf8");
+  assert.equal(parseRegister(text).problems[0].pin, "4211");
+});
+
+test("dropping and parking name the pin too; an ordinary field change does not", async () => {
+  for (const status of ["dropped", "parked"]) {
+    const dir = overlay({ a: PINNED });
+    const args = ["set", "P1", `status=${status}`, "state=held", "--agent", "a"];
+    if (status === "dropped") args.push("--confirmed");
+    const r = await aps(args, { APS_OVERLAY: dir });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /unpin: message 4211/, `${status} said nothing about the pin`);
+  }
+  const dir = overlay({ a: PINNED });
+  const r = await aps(["set", "P1", "state=still going", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /unpin:/);
+});
+
+test("clearing the pin in the same call as the close says nothing more about it", async () => {
+  const dir = overlay({ a: PINNED });
+  const r = await aps(["set", "P1", "status=done", "pin=", "--agent", "a", "--confirmed"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /unpin:/);
+  const text = readFileSync(path.join(dir, "agents", "a", "PROBLEMS.md"), "utf8");
+  assert.equal(parseRegister(text).problems[0].pin, "");
+  assert.doesNotMatch(text, /- pin:/);
+});
+
+test("set --json carries the unpin for a runtime that posts it", async () => {
+  const dir = overlay({ a: PINNED });
+  const r = await aps(["set", "P1", "status=done", "--agent", "a", "--confirmed", "--json"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.unpin.messageId, "4211");
+  assert.equal(out.unpin.thread, "topic:1");
+  assert.ok(Array.isArray(out.logged));
+});
+
+test("report names a problem that ended with its pin still up, and lint warns about it the next day", async () => {
+  const stale = `Mission: one line about the outcome\n\n${entry("P1", "First problem", { status: "done", thread: "topic:1", pin: "4211", learned: "one line", confirmed: "2026-10-01 done", updated: "2026-10-01" })}`;
+  const dir = overlay({ a: stale });
+  const r = await aps(["report", "--agents", "a"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /still pinned after the problem ended: P1 message 4211 in topic:1 \(done\)/);
+  assert.doesNotMatch(r.stdout, /pins: not checked/);
+  const l = await aps(["lint", "--agent", "a"], { APS_OVERLAY: dir });
+  assert.match(l.stdout + l.stderr, /pin: 4211` is still set/);
+
+  // On the day of the close the unpin is a step of the close, not a fault, so
+  // lint stays quiet and `aps doctor` does not call the register broken.
+  const sameDay = `Mission: one line about the outcome\n\n${entry("P1", "First problem", { status: "done", thread: "topic:1", pin: "4211", learned: "one line", confirmed: `${DAY} done`, updated: DAY })}`;
+  const fresh = overlay({ a: sameDay });
+  const q = await aps(["lint", "--agent", "a"], { APS_OVERLAY: fresh });
+  assert.doesNotMatch(q.stdout + q.stderr, /pin-stale|is still set/);
+  // The report names it either way: that is the operator's surface for a pin
+  // the agent could not take down.
+  const rep = await aps(["report", "--agents", "a"], { APS_OVERLAY: fresh });
+  assert.match(rep.stdout, /still pinned after the problem ended: P1 message 4211/);
+});
+
+test("the unpin names the command this deployment actually runs, not a bare aps", async () => {
+  const dir = overlay({ a: PINNED });
+  const r = await aps(["set", "P1", "status=done", "--agent", "a", "--confirmed"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /node \S*bin\/aps\.mjs set P1 pin= --overlay \S+ --agent a/);
+});
+
+test("replacing the pin with a new id during a close still names the message left up", async () => {
+  const dir = overlay({ a: PINNED });
+  const r = await aps(["set", "P1", "status=done", "pin=4299", "--agent", "a", "--confirmed"], { APS_OVERLAY: dir });
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /unpin: message 4211/);
+});

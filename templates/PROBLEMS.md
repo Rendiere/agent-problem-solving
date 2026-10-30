@@ -34,5 +34,6 @@ decision log; a hand edit parses, but `aps lint` flags it.
 - corrections: 0
 - updated: YYYY-MM-DD
 - state: <one line on where it stands; always fill it when parking>
+- pin: <id of the pinned 📌 message for this problem; cleared once it is unpinned>
 - learned: <one line, written at close>
 -->
